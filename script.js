@@ -1,14 +1,13 @@
-// script.js — フロント（Cloudflare Pages）
-// ・ローカルで必ず生成（USE_LOCAL_ONLY=true）→ サーバ優先に戻す時は false
-// ・解答トグル、チェック、ズーム
-// ・生成後に厳密バリデーション→失敗なら自動再生成（最大20回）
+// script.js — Cloudflare Pages フロント
+// ・合体生成（ローカル/サーバ）
+// ・Yは3セル単位でスナップ（箱崩れ防止）
+// ・ローカル生成/チェックも正規化oy(3の倍数)を使用
+// ・解答トグル、チェック、ズーム、「すべてクリア」
 // ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
-    // ======== 切替フラグ ========
-    const USE_LOCAL_ONLY = true; // ← サーバに戻す場合は false
-    // ============================
+    const USE_LOCAL_ONLY = true; // サーバ優先に戻す場合は false
 
     // ===== DOM =====
     const canvas = document.getElementById('canvas');
@@ -33,7 +32,8 @@
     const GRID = 9;
     const CELL = 30;
     const BOARD_PIX = GRID * CELL;
-    const SNAP = CELL;
+    const SNAP_X = CELL;       // ← Xは1セル単位
+    const SNAP_Y = CELL * 3;   // ← ★Yは3セル単位（ここが重要）
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
     const MIN_ZOOM = 0.5, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
@@ -57,7 +57,10 @@
     function nextId() { let m=0; for (const s of squares) m=Math.max(m, +s.id||0); return String(m+1); }
     function newSquare(x, y) {
       const id = nextId();
-      return { id, x, y, w: BOARD_PIX, h: BOARD_PIX,
+      // 初期配置も3セル単位に揃える
+      const nx = snap(x, SNAP_X);
+      const ny = snap(y, SNAP_Y);
+      return { id, x:nx, y:ny, w: BOARD_PIX, h: BOARD_PIX,
         problemData:createEmptyGrid(), userData:createEmptyGrid(),
         checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
     }
@@ -121,6 +124,7 @@
       for (let i=0;i<=GRID;i+=3){
         const gx=s.x+i*CELL+.5, gy=s.y+i*CELL+.5;
         ctx.beginPath(); ctx.moveTo(gx,s.y); ctx.lineTo(gx,s.y+s.h); ctx.stroke();
+        ctx.beginPath(); ctx.MoveTo; // no-op safety (ignored)
         ctx.beginPath(); ctx.moveTo(s.x,gy); ctx.lineTo(s.x+s.w,gy); ctx.stroke();
       }
       ctx.font = FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -160,7 +164,7 @@
       const s=squares.find(x=>String(x.id)===String(drag.id)); if(!s) return;
       const rect=canvas.getBoundingClientRect();
       const {x:xw,y:yw}=toWorld(e.clientX-rect.left, e.clientY-rect.top);
-      let nx=snap(xw-drag.offsetX,SNAP), ny=snap(yw-drag.offsetY,SNAP);
+      let nx=snap(xw-drag.offsetX,SNAP_X), ny=snap(yw-drag.offsetY,SNAP_Y); // ★Yは3セル単位
       nx=clamp(nx,0,(canvas.width/devicePR/zoom)-s.w);
       ny=clamp(ny,0,(canvas.height/devicePR/zoom)-s.h);
       s.x=nx; s.y=ny; draw();
@@ -180,9 +184,9 @@
     // ===== ボタン =====
     addSquareButton?.addEventListener('click', ()=>{
       const count=squares.length, col=count%4, row=Math.floor(count/4), m=18;
-      const s=newSquare(snap(m+col*(BOARD_PIX+m),SNAP), snap(40+row*(BOARD_PIX+m),SNAP));
+      const s=newSquare(m+col*(BOARD_PIX+m), 40+row*(BOARD_PIX+m));
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
-      setStatus('盤を追加しました'); updateButtonStates(); draw(); saveState();
+      setStatus('盤を追加しました（縦は3セル単位で整列）'); updateButtonStates(); draw(); saveState();
     });
     deleteButton?.addEventListener('click', ()=>{
       if (activeSquareId==null) return;
@@ -237,10 +241,9 @@
       const a = document.createElement('a'); a.href=url; a.download='gattai_export.json'; a.click(); URL.revokeObjectURL(url);
     });
 
-    // ===== 生成（ローカル固定 or サーバ優先）=====
+    // ===== 生成 =====
     async function handleGenerateProblem(){
       if (squares.length===0) { alert('まず「盤面を追加」してください'); return; }
-      // 初期化
       for (const sq of squares){
         sq.problemData=createEmptyGrid(); sq.userData=createEmptyGrid();
         sq.checkData=createEmptyGrid(); sq.solutionData=createEmptyGrid(); sq._userBackup=null;
@@ -252,33 +255,25 @@
       generateProblemButton.disabled = true;
 
       try {
-        if (USE_LOCAL_ONLY) {
-          setStatus(`問題を生成しています...（ローカル / 難易度:${diff}）`);
-          const boards = generateLocallyValidated(layout, diff); // ★バリデーション付き
-          renderBoards(boards);
-          isProblemGenerated=true;
-          setStatus(`問題を作成しました！（ローカル / ${boards.length}盤）`);
-          return;
-        }
-        // サーバ優先
         setStatus(`問題を生成しています...（難易度:${diff}）`);
-        const boards = await generateFromServer(layout, /*adShown=*/false, diff);
-        // 念のためクライアントでも検証
-        if (!validateBoardsClient(layout, boards)) {
-          console.warn('サーバ生成が不正 → ローカル再生成に切替');
-          const local = generateLocallyValidated(layout, diff);
-          renderBoards(local);
+        let boards;
+        if (USE_LOCAL_ONLY) {
+          boards = generateLocallyValidated(layout, diff);
         } else {
-          renderBoards(boards);
+          try {
+            boards = await generateFromServer(layout, /*adShown=*/false, diff);
+            if (!validateBoardsClient(layout, boards)) throw new Error('server invalid');
+          } catch {
+            boards = generateLocallyValidated(layout, diff);
+          }
         }
-        isProblemGenerated=true;
-        setStatus(`問題を作成しました！（サーバ / ${boards.length}盤）`);
-      } catch (err) {
-        console.warn('API失敗。ローカル生成に切替: ', err);
-        const boards = generateLocallyValidated(layout, diff);
         renderBoards(boards);
         isProblemGenerated=true;
-        setStatus(`問題を作成しました！（ローカル切替 / ${boards.length}盤）`);
+        setStatus(`問題を作成しました！（${boards.length}盤）`);
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || '生成に失敗しました');
+        setStatus('生成に失敗しました');
       } finally {
         generateProblemButton.disabled=false; updateButtonStates(); draw(); saveState();
       }
@@ -290,15 +285,11 @@
         headers:{ 'content-type':'application/json' },
         body: JSON.stringify({ layout, adShown, difficulty })
       });
-      if (!res.ok) {
-        const t = await safeText(res);
-        throw new Error(`API ${res.status}: ${t || res.statusText}`);
-      }
+      if (!res.ok) throw new Error(`API ${res.status}`);
       const data = await res.json();
       if (!data?.ok) throw new Error(data?.reason || 'ok=false');
       return data.puzzle?.boards || [];
     }
-    async function safeText(res){ try{ return await res.text(); } catch{ return ''; } }
 
     function renderBoards(boards){
       const map = new Map(boards.map(b=>[String(b.id), b]));
@@ -312,7 +303,7 @@
       updateButtonStates(); draw(); saveState();
     }
 
-    // ===== チェック =====
+    // ===== 単盤チェック =====
     function runCheck(sq){
       sq.checkData = createEmptyGrid();
       const val = (r,c)=> (sq.userData[r][c] || sq.problemData[r][c] || 0);
@@ -334,7 +325,7 @@
           else seen.set(v,[r,c]);
         }
       }
-      // ブロック
+      // 箱
       for (let br=0;br<GRID;br+=3){
         for (let bc=0;bc<GRID;bc+=3){
           const seen=new Map();
@@ -348,9 +339,17 @@
       }
     }
 
-    // （合体用）共有マス不一致の検出
+    // ===== 合体の重なりチェック（正規化oy使用）=====
+    function normalizeLayoutFront(sqs){
+      return sqs.map(s=>{
+        const ox = Math.round(s.x/CELL);
+        let oy = Math.round(s.y/CELL);
+        oy -= oy % 3; // ★3の倍数
+        return { id:String(s.id), ox, oy };
+      });
+    }
     function buildOverlapsClient(sqs){
-      const norm = sqs.map(s=>({ id:String(s.id), ox:Math.round(s.x/CELL), oy:Math.round(s.y/CELL) }));
+      const norm = normalizeLayoutFront(sqs);
       const n = norm.length, overlaps=[];
       for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
         const A=norm[i], B=norm[j];
@@ -379,7 +378,7 @@
       }
     }
 
-    // ===== 保存/復元 =====
+    // ===== 保存/復元/初期化 =====
     function saveState(){
       try{
         const payload = {
@@ -399,7 +398,8 @@
         const obj = JSON.parse(raw); if (!obj || !Array.isArray(obj.squares)) return false;
         zoom = clamp(Number(obj.zoom)||1, MIN_ZOOM, MAX_ZOOM);
         squares = obj.squares.map(o=>({
-          id:o.id, x:o.x, y:o.y, w:BOARD_PIX, h:BOARD_PIX,
+          id:o.id, x: snap(o.x||0, SNAP_X), y: snap(o.y||0, SNAP_Y), // ★復元時も3セル整列
+          w: BOARD_PIX, h: BOARD_PIX,
           problemData:o.problemData||createEmptyGrid(),
           userData:o.userData||createEmptyGrid(),
           solutionData:o.solutionData||createEmptyGrid(),
@@ -410,8 +410,6 @@
         applyTransform(); return true;
       }catch{ return false; }
     }
-
-    // ===== 初期化 =====
     function resizeCanvasToDisplaySize(){
       const rect = canvas.getBoundingClientRect();
       const w=Math.max(600, Math.floor(rect.width)), h=Math.max(450, Math.floor(rect.height));
@@ -422,11 +420,11 @@
     window.addEventListener('resize', ()=>{ resizeCanvasToDisplaySize(); draw(); });
 
     resizeCanvasToDisplaySize();
-    if (!loadState()) setStatus('レイアウト編集モード：盤を追加して配置してください');
-    else setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトは復元されました');
+    if (!loadState()) setStatus('レイアウト編集モード：盤を追加して配置してください（縦は3セル単位）');
+    else setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトは復元されました（縦は3セル単位）');
     updateButtonStates(); draw();
 
-    // ========= ローカル生成＋バリデーション =========
+    // ========= ローカル生成（正規化oy使用） =========
     function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
     function makeGlobalPattern(){
       function makeOrder(){
@@ -442,27 +440,13 @@
       }
       return { valueAt };
     }
-    function carveBoard(solved, hintTarget){
-      const g = solved.map(r=>r.slice());
-      const cells=[...Array(81).keys()]; shuffle(cells);
-      let toRemove=Math.max(0, 81-hintTarget);
-      for(const idx of cells){
-        if(toRemove<=0) break;
-        const r=(idx/9)|0, c=idx%9, or=8-r, oc=8-c;
-        if(g[r][c]===0 && g[or][oc]===0) continue;
-        g[r][c]=0; g[or][oc]=0;
-        toRemove -= (r===or && c===oc) ? 1 : 2;
-      }
-      return g;
-    }
     function normalizeLayout(layout){
-      return layout.map(o=>({
-        id:String(o.id),
-        ox: Math.round((Number(o.x)||0)/CELL),
-        oy: Math.round((Number(o.y)||0)/CELL),
-        rawx: Number(o.x)||0,
-        rawy: Number(o.y)||0
-      }));
+      return layout.map(o=>{
+        const ox = Math.round((Number(o.x)||0)/CELL);
+        let   oy = Math.round((Number(o.y)||0)/CELL);
+        oy -= oy % 3; // ★3の倍数
+        return { id:String(o.id), ox, oy, rawx:Number(o.x)||0, rawy:Number(o.y)||0 };
+      });
     }
     function buildOverlaps(nlayout){
       const n=nlayout.length, overlaps=Array.from({length:n},()=>[]);
@@ -482,7 +466,19 @@
       }
       return overlaps;
     }
-    // 与えを解答値に強制整合
+    function carveBoard(solved, hintTarget){
+      const g = solved.map(r=>r.slice());
+      const cells=[...Array(81).keys()]; shuffle(cells);
+      let toRemove=Math.max(0, 81-hintTarget);
+      for(const idx of cells){
+        if(toRemove<=0) break;
+        const r=(idx/9)|0, c=idx%9, or=8-r, oc=8-c;
+        if(g[r][c]===0 && g[or][oc]===0) continue;
+        g[r][c]=0; g[or][oc]=0;
+        toRemove -= (r===or && c===oc) ? 1 : 2;
+      }
+      return g;
+    }
     function clampPuzzleToSolution(puzzle, solution){
       for(let r=0;r<9;r++) for(let c=0;c<9;c++){
         const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
@@ -513,42 +509,25 @@
         }
       }
     }
-
-    // ★バリデーション：与えだけで行/列/3x3に重複が無いこと
     function puzzleHasContradiction(p){
-      // row
       for (let r=0;r<9;r++){
         const seen=new Set();
-        for (let c=0;c<9;c++){
-          const v=p[r][c]|0; if(!v) continue;
-          if (seen.has(v)) return true;
-          seen.add(v);
-        }
+        for (let c=0;c<9;c++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
       }
-      // col
       for (let c=0;c<9;c++){
         const seen=new Set();
-        for (let r=0;r<9;r++){
-          const v=p[r][c]|0; if(!v) continue;
-          if (seen.has(v)) return true;
-          seen.add(v);
-        }
+        for (let r=0;r<9;r++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
       }
-      // box
       for (let br=0;br<9;br+=3) for (let bc=0;bc<9;bc+=3){
         const seen=new Set();
         for (let dr=0;dr<3;dr++) for (let dc=0;dc<3;dc++){
-          const v=p[br+dr][bc+dc]|0; if(!v) continue;
-          if (seen.has(v)) return true;
-          seen.add(v);
+          const v=p[br+dr][bc+dc]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v);
         }
       }
       return false;
     }
-    // ★クライアント全体バリデーション
     function validateBoardsClient(layout, boards){
       if (!Array.isArray(boards) || boards.length!==layout.length) return false;
-      // map by id
       const L = normalizeLayout(layout);
       const map = new Map(boards.map(b=>[String(b.id), b]));
       const puzzles = [], solved = [];
@@ -556,11 +535,8 @@
         const b = map.get(String(o.id)); if(!b) return false;
         puzzles.push(cloneGrid(b.grid)); solved.push(cloneGrid(b.solution));
       }
-      // 与えは 0 か解答と一致させる（安全側）
       for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
-      // 与え矛盾（行/列/箱）
       for (const p of puzzles) if (puzzleHasContradiction(p)) return false;
-      // 共有マス一致
       const overlaps = buildOverlaps(L);
       for (let i=0;i<overlaps.length;i++){
         for (const e of overlaps[i]){
@@ -572,7 +548,6 @@
       }
       return true;
     }
-
     function generateLocallyOnce(layout, difficulty='normal'){
       const HINT = { easy:40, normal:36, hard:30 }[difficulty] ?? 36;
       const nlayout = normalizeLayout(layout);
@@ -586,24 +561,18 @@
       enforceOverlapBySolution(puzzles, solved, overlaps);
       for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
       return nlayout.map((o, idx) => ({
-        id: layout[idx].id,
-        x: o.rawx, y: o.rawy,
-        grid: puzzles[idx],
-        solution: solved[idx],
+        id: layout[idx].id, x: o.rawx, y: o.rawy,
+        grid: puzzles[idx], solution: solved[idx],
       }));
     }
-
-    // ★再生成ループつき（最大20回）
     function generateLocallyValidated(layout, difficulty='normal'){
       for (let k=0;k<20;k++){
         const boards = generateLocallyOnce(layout, difficulty);
         if (validateBoardsClient(layout, boards)) return boards;
         console.warn('ローカル生成バリデーション失敗 → 再生成', k+1);
       }
-      // 20回失敗は現実的に起きない想定。最後の生成結果を返す
       return generateLocallyOnce(layout, difficulty);
     }
-    // ========= ローカル生成ここまで =========
 
     // イベント登録
     generateProblemButton?.addEventListener('click', handleGenerateProblem);
