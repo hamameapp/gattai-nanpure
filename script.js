@@ -1,21 +1,18 @@
 // script.js — フロント（Cloudflare Pages）
-// ・合体生成（ローカル固定 / サーバ優先はフラグで切替）
+// ・ローカルで必ず生成（USE_LOCAL_ONLY=true）→ サーバ優先に戻す時は false
 // ・解答トグル、チェック、ズーム
-// ・「すべてクリア」で localStorage も消す
+// ・生成後に厳密バリデーション→失敗なら自動再生成（最大20回）
 // ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
-    // ======== ここだけ切替 ========
-    // true  : サーバを使わず常にローカル生成（“何も起きない”の暫定回避）
-    // false : サーバ優先＋失敗時ローカルフォールバック
-    const USE_LOCAL_ONLY = true;
-    // ==============================
+    // ======== 切替フラグ ========
+    const USE_LOCAL_ONLY = true; // ← サーバに戻す場合は false
+    // ============================
 
     // ===== DOM =====
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
-
     const statusDiv = document.getElementById('status');
     const addSquareButton = byId('addSquareButton');
     const deleteButton = byId('deleteButton');
@@ -25,7 +22,6 @@
     const solveButton = byId('solveButton');
     const exportTextButton = byId('exportTextButton');
     const difficultySel = document.getElementById('difficulty');
-
     // ズーム
     const zoomOutBtn = byId('zoomOut');
     const zoomInBtn = byId('zoomIn');
@@ -35,11 +31,10 @@
 
     // ===== 定数 =====
     const GRID = 9;
-    const CELL = 30;  // サーバ側CELL_PXと合わせる
+    const CELL = 30;
     const BOARD_PIX = GRID * CELL;
     const SNAP = CELL;
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-
     const MIN_ZOOM = 0.5, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
 
@@ -259,7 +254,7 @@
       try {
         if (USE_LOCAL_ONLY) {
           setStatus(`問題を生成しています...（ローカル / 難易度:${diff}）`);
-          const boards = generateLocally(layout, diff);
+          const boards = generateLocallyValidated(layout, diff); // ★バリデーション付き
           renderBoards(boards);
           isProblemGenerated=true;
           setStatus(`問題を作成しました！（ローカル / ${boards.length}盤）`);
@@ -268,12 +263,19 @@
         // サーバ優先
         setStatus(`問題を生成しています...（難易度:${diff}）`);
         const boards = await generateFromServer(layout, /*adShown=*/false, diff);
-        renderBoards(boards);
+        // 念のためクライアントでも検証
+        if (!validateBoardsClient(layout, boards)) {
+          console.warn('サーバ生成が不正 → ローカル再生成に切替');
+          const local = generateLocallyValidated(layout, diff);
+          renderBoards(local);
+        } else {
+          renderBoards(boards);
+        }
         isProblemGenerated=true;
         setStatus(`問題を作成しました！（サーバ / ${boards.length}盤）`);
       } catch (err) {
         console.warn('API失敗。ローカル生成に切替: ', err);
-        const boards = generateLocally(layout, diff);
+        const boards = generateLocallyValidated(layout, diff);
         renderBoards(boards);
         isProblemGenerated=true;
         setStatus(`問題を作成しました！（ローカル切替 / ${boards.length}盤）`);
@@ -404,7 +406,7 @@
           checkData:createEmptyGrid(), _userBackup:null
         }));
         isProblemGenerated = !!obj.isProblemGenerated && squares.length>0;
-        showSolution = false; // 復元時はオフ
+        showSolution = false;
         applyTransform(); return true;
       }catch{ return false; }
     }
@@ -424,7 +426,7 @@
     else setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトは復元されました');
     updateButtonStates(); draw();
 
-    // ========= ローカル生成ロジック =========
+    // ========= ローカル生成＋バリデーション =========
     function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
     function makeGlobalPattern(){
       function makeOrder(){
@@ -480,6 +482,12 @@
       }
       return overlaps;
     }
+    // 与えを解答値に強制整合
+    function clampPuzzleToSolution(puzzle, solution){
+      for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+        const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
+      }
+    }
     function unifyGivenCells(puzzles, overlaps){
       for (let i=0;i<overlaps.length;i++){
         for (const e of overlaps[i]){
@@ -505,12 +513,67 @@
         }
       }
     }
-    function clampPuzzleToSolution(puzzle, solution){
-      for(let r=0;r<9;r++) for(let c=0;c<9;c++){
-        const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
+
+    // ★バリデーション：与えだけで行/列/3x3に重複が無いこと
+    function puzzleHasContradiction(p){
+      // row
+      for (let r=0;r<9;r++){
+        const seen=new Set();
+        for (let c=0;c<9;c++){
+          const v=p[r][c]|0; if(!v) continue;
+          if (seen.has(v)) return true;
+          seen.add(v);
+        }
       }
+      // col
+      for (let c=0;c<9;c++){
+        const seen=new Set();
+        for (let r=0;r<9;r++){
+          const v=p[r][c]|0; if(!v) continue;
+          if (seen.has(v)) return true;
+          seen.add(v);
+        }
+      }
+      // box
+      for (let br=0;br<9;br+=3) for (let bc=0;bc<9;bc+=3){
+        const seen=new Set();
+        for (let dr=0;dr<3;dr++) for (let dc=0;dc<3;dc++){
+          const v=p[br+dr][bc+dc]|0; if(!v) continue;
+          if (seen.has(v)) return true;
+          seen.add(v);
+        }
+      }
+      return false;
     }
-    function generateLocally(layout, difficulty='normal'){
+    // ★クライアント全体バリデーション
+    function validateBoardsClient(layout, boards){
+      if (!Array.isArray(boards) || boards.length!==layout.length) return false;
+      // map by id
+      const L = normalizeLayout(layout);
+      const map = new Map(boards.map(b=>[String(b.id), b]));
+      const puzzles = [], solved = [];
+      for (const o of L){
+        const b = map.get(String(o.id)); if(!b) return false;
+        puzzles.push(cloneGrid(b.grid)); solved.push(cloneGrid(b.solution));
+      }
+      // 与えは 0 か解答と一致させる（安全側）
+      for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
+      // 与え矛盾（行/列/箱）
+      for (const p of puzzles) if (puzzleHasContradiction(p)) return false;
+      // 共有マス一致
+      const overlaps = buildOverlaps(L);
+      for (let i=0;i<overlaps.length;i++){
+        for (const e of overlaps[i]){
+          const j=e.j; for (const {r,c,r2,c2} of e.cells){
+            const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
+            if (a!==0 && b!==0 && a!==b) return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    function generateLocallyOnce(layout, difficulty='normal'){
       const HINT = { easy:40, normal:36, hard:30 }[difficulty] ?? 36;
       const nlayout = normalizeLayout(layout);
       const pattern = makeGlobalPattern();
@@ -529,9 +592,20 @@
         solution: solved[idx],
       }));
     }
+
+    // ★再生成ループつき（最大20回）
+    function generateLocallyValidated(layout, difficulty='normal'){
+      for (let k=0;k<20;k++){
+        const boards = generateLocallyOnce(layout, difficulty);
+        if (validateBoardsClient(layout, boards)) return boards;
+        console.warn('ローカル生成バリデーション失敗 → 再生成', k+1);
+      }
+      // 20回失敗は現実的に起きない想定。最後の生成結果を返す
+      return generateLocallyOnce(layout, difficulty);
+    }
     // ========= ローカル生成ここまで =========
 
-    // イベント登録（最後に）
+    // イベント登録
     generateProblemButton?.addEventListener('click', handleGenerateProblem);
   });
 })();
