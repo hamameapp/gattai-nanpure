@@ -1,10 +1,10 @@
 // script.js — Cloudflare Pages フロント
-// ・ズーム 10%〜200%（カーソル中心ズーム）＋ パン（Space/右/中ドラッグ）
+// ・ズーム 10%〜200%（カーソル中心ズーム）＋ パン（Space/右/中ドラッグ, ホイールパン, Shift+ホイール横）
+// ・盤面追加は「いま見ている中心」に生成（移動が楽）
 // ・Yは3セル単位でスナップ（箱崩れ防止）
 // ・ローカル生成（安全バリデーション）/ サーバ連携（オプション）
-// ・矛盾チェック（行/列/箱/共有）
-// ・唯一性チェック（全体一括ソルバで 0/1/2解以上 を判定）
-// ・解答トグル、エクスポート
+// ・矛盾チェック（行/列/箱/共有）と唯一性チェック
+// ・すべて削除ボタン復活
 // ・保存キー: v4
 
 (() => {
@@ -17,6 +17,7 @@
     const statusDiv = document.getElementById('status');
     const addSquareButton = byId('addSquareButton');
     const deleteButton = byId('deleteButton');
+    const clearAllBoardsButton = byId('clearAllBoardsButton');
     const generateProblemButton = byId('generateProblemButton');
     const checkButton = byId('checkButton');     // 矛盾チェック
     const uniqueButton = byId('uniqueButton');   // 一意解チェック
@@ -24,7 +25,7 @@
     const exportTextButton = byId('exportTextButton');
     const difficultySel = document.getElementById('difficulty');
 
-    // ズームUI（任意）
+    // ズームUI
     const zoomOutBtn = byId('zoomOut');
     const zoomInBtn = byId('zoomIn');
     const zoomFitBtn = byId('zoomFit');
@@ -40,6 +41,8 @@
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
     const MIN_ZOOM = 0.1, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
+
+    const HINTS = { easy: 40, normal: 36, hard: 30, expert: 28, extreme: 26 };
 
     // ===== 状態 =====
     let squares = [];
@@ -60,18 +63,26 @@
     const cloneGrid = g=>g.map(r=>r.slice());
     function nextId(){ let m=0; for(const s of squares) m=Math.max(m, +s.id||0); return String(m+1); }
 
-    function newSquare(x, y){
+    function newSquareAtWorldCenter(){
+      const rect = canvas.getBoundingClientRect();
+      const cx = rect.width / 2, cy = rect.height / 2; // 画面中心（CSS px）
+      const world = toWorld(cx, cy);
+      // 盤面の左上に変換し、スナップ＆非負
+      const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
+      let ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
       const id = nextId();
-      return { id, x:snap(x,SNAP_X), y:snap(y,SNAP_Y), w:BOARD_PIX, h:BOARD_PIX,
+      return { id, x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
         problemData:createEmptyGrid(), userData:createEmptyGrid(),
         checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
     }
+
     const setStatus = msg => { if (statusDiv) statusDiv.textContent = msg; };
     function updateButtonStates(){
       zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
       generateProblemButton && (generateProblemButton.disabled = squares.length === 0);
       deleteButton && (deleteButton.disabled = activeSquareId == null);
-      checkButton && (checkButton.disabled = squares.length === 0 || !isProblemGenerated);
+      clearAllBoardsButton && (clearAllBoardsButton.disabled = squares.length === 0);
+      checkButton && (checkButton.disabled = squares.length === 0 || !isProblemGenerated || showSolution);
       uniqueButton && (uniqueButton.disabled = squares.length === 0 || !isProblemGenerated);
       exportTextButton && (exportTextButton.disabled = squares.length === 0);
       if (solveButton) { solveButton.disabled = !isProblemGenerated; solveButton.textContent = showSolution ? '解答を隠す' : '解答を表示'; }
@@ -80,12 +91,19 @@
     // ===== ビューポート（ズーム/パン）=====
     function applyTransform(){ ctx.setTransform(devicePR*zoom,0,0,devicePR*zoom, devicePR*panX, devicePR*panY); }
     function toWorld(mx,my){ return { x:(mx-panX)/zoom, y:(my-panY)/zoom }; }
+
     function setZoomAt(newZ, ax, ay){
       const z=clamp(newZ, MIN_ZOOM, MAX_ZOOM);
-      const w=toWorld(ax,ay); zoom=z; panX=ax - w.x*zoom; panY=ay - w.y*zoom;
+      const w=toWorld(ax,ay);
+      zoom=z;
+      panX=ax - w.x*zoom;
+      panY=ay - w.y*zoom;
       applyTransform(); draw(); updateButtonStates(); saveState();
     }
-    function setZoom(z){ const rect=canvas.getBoundingClientRect(); setZoomAt(z, rect.width/2, rect.height/2); }
+    function setZoom(z){
+      const rect=canvas.getBoundingClientRect();
+      setZoomAt(z, rect.width/2, rect.height/2);
+    }
     function contentBounds(){
       if (squares.length===0) return {minX:0,minY:0,maxX:BOARD_PIX,maxY:BOARD_PIX};
       let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
@@ -107,18 +125,38 @@
       if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
 
+    // ズームUI
     zoomOutBtn?.addEventListener('click',()=>setZoom(zoom-ZOOM_STEP));
     zoomInBtn?.addEventListener('click',()=>setZoom(zoom+ZOOM_STEP));
     zoom100Btn?.addEventListener('click',()=>setZoom(1));
     zoomFitBtn?.addEventListener('click',fitZoom);
 
+    // ホイール操作：Ctrl/⌘ + ホイールでズーム、修飾なしはパン（Shiftで横パン優先）
     canvas.addEventListener('wheel', (e)=>{
+      const rect=canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey){
         e.preventDefault();
-        const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+        const mx=e.clientX-rect.left, my=e.clientY-rect.top;
         setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
+      } else {
+        // パン
+        e.preventDefault();
+        if (e.shiftKey){
+          panX -= e.deltaY; // 縦ホイールで横移動
+        } else {
+          panX -= e.deltaX;
+          panY -= e.deltaY;
+        }
+        applyTransform(); draw(); saveState();
       }
     }, { passive:false });
+
+    // ショートカット：F=Fit、+=拡大、-=縮小
+    window.addEventListener('keydown',(e)=>{
+      if (e.code==='KeyF'){ e.preventDefault(); fitZoom(); }
+      if (e.key==='+' || e.key==='='){ e.preventDefault(); setZoom(zoom+ZOOM_STEP); }
+      if (e.key==='-' || e.key==='_'){ e.preventDefault(); setZoom(zoom-ZOOM_STEP); }
+    });
 
     // ===== 描画 =====
     function draw(){
@@ -205,10 +243,9 @@
 
     // ===== ボタン =====
     addSquareButton?.addEventListener('click',()=>{
-      const count=squares.length, col=count%4, row=Math.floor(count/4), m=18;
-      const s=newSquare(m+col*(BOARD_PIX+m), 40+row*(BOARD_PIX+m));
+      const s=newSquareAtWorldCenter();
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
-      setStatus('盤を追加：Spaceドラッグで移動 / Ctrl+ホイールでズーム（縦は3セル単位）');
+      setStatus('盤を追加：いま見ている中心に生成しました（Spaceドラッグでパン／Ctrl+ホイールでズーム）');
       updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
     deleteButton?.addEventListener('click',()=>{
@@ -218,6 +255,15 @@
       showSolution=false; setStatus('選択中の盤を削除');
       updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
+    clearAllBoardsButton?.addEventListener('click', ()=>{
+      if (!confirm('配置した盤面をすべて削除します。よろしいですか？')) return;
+      squares=[]; activeSquareId=null; activeCell=null; isProblemGenerated=false; showSolution=false;
+      localStorage.removeItem(LS_KEY);
+      panX=0; panY=0; zoom=1;
+      applyTransform(); updateButtonStates(); draw();
+      setStatus('すべての盤面をクリアしました');
+    });
+
     generateProblemButton?.addEventListener('click', handleGenerateProblem);
     checkButton?.addEventListener('click', checkAllAndReport);
     uniqueButton?.addEventListener('click', handleUniqueCheck);
@@ -374,10 +420,10 @@
       if (!isProblemGenerated) return;
       uniqueButton.disabled=true;
       setStatus('唯一性チェック中…（解が2つ見つかったら打ち切ります）');
-      await new Promise(r=>requestAnimationFrame(r)); // 画面更新
+      await new Promise(r=>requestAnimationFrame(r));
       try{
         const result = checkUniquenessCombined();
-        if (result === 0) setStatus('矛盾により解が存在しません（想定外）');
+        if (result === 0) setStatus('解が存在しません（与えに矛盾）');
         else if (result === 1) setStatus('一意解です（唯一解）');
         else if (result === 2) setStatus('複数解があります（少なくとも2解）');
         else setStatus('判定できませんでした');
@@ -389,131 +435,83 @@
       }
     }
 
-    // 共有制約を含む全体CSPとして解を数える（0,1,2を返す。2は「2以上」）
+    // 共有制約を含む全体CSPとして解を数える（0,1,2を返す）
     function checkUniquenessCombined(){
-      // === 1) 変数の同一視（重なりセルを Union-Find で結合） ===
       const overlaps = buildOverlapsClient(squares);
       const idOf = (b,r,c)=> b*81 + r*9 + c;
       const N = squares.length * 81;
       const parent = new Int32Array(N); for (let i=0;i<N;i++) parent[i]=i;
       const find=(x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
       const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) parent[b]=a; };
-      for (const {i,j,cells} of overlaps){
-        for (const {r,c,r2,c2} of cells){ unite(idOf(i,r,c), idOf(j,r2,c2)); }
-      }
+      for (const {i,j,cells} of overlaps){ for (const {r,c,r2,c2} of cells){ unite(idOf(i,r,c), idOf(j,r2,c2)); } }
 
-      // === 2) 変数クラスの構築 ===
-      const classes = new Map(); // root -> [{b,r,c}]
+      const classes = new Map();
       for (let b=0;b<squares.length;b++){
         for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-          const root = find(idOf(b,r,c));
-          const key = root;
-          const arr = classes.get(key) || [];
+          const root=find(idOf(b,r,c));
+          const arr = classes.get(root) || [];
           arr.push({b,r,c});
-          classes.set(key, arr);
+          classes.set(root, arr);
         }
       }
-      const vars = Array.from(classes.values()); // 変数 = 等価クラス
+      const vars = Array.from(classes.values());
 
-      // === 3) 盤ごとの使用マスク（与えで埋める） ===
-      const ROW = Array.from({length:squares.length}, ()=> new Uint16Array(9)); // bit1..9
+      const ROW = Array.from({length:squares.length}, ()=> new Uint16Array(9));
       const COL = Array.from({length:squares.length}, ()=> new Uint16Array(9));
       const BOX = Array.from({length:squares.length}, ()=> new Uint16Array(9));
-      const BIT = d => 1<<d; const ALL = 0x3FE; // 1..9
+      const BIT = d => 1<<d; const ALL = 0x3FE;
 
-      // 与え矛盾チェック＋固定値
-      const fixedVal = new Map(); // varIndex -> value(1..9)
-      const varIndexOf = new Map(); // map class -> index
-      vars.forEach((v,idx)=>varIndexOf.set(v, idx));
-
+      const fixedVal = new Map();
       let idx=0;
       for (const v of vars){
-        let forced = 0; // 0=未, >0=値
+        let forced=0;
         for (const {b,r,c} of v){
           const giv = squares[b].problemData[r][c]|0;
           if (giv>0){
-            if (forced===0) forced=giv;
-            else if (forced!==giv) return 0; // 共有セルで異なる与え → 解なし
+            if (forced===0) forced=giv; else if (forced!==giv) return 0;
           }
         }
         if (forced>0){
           fixedVal.set(idx, forced);
-          // マスクへ反映（与えが重なる複数の盤に同じ値を置く）
           for (const {b,r,c} of v){
-            const bi = Math.floor(r/3)*3 + Math.floor(c/3);
-            const bit = BIT(forced);
-            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit) return 0; // 同一盤内で衝突
-            ROW[b][r] |= bit; COL[b][c] |= bit; BOX[b][bi] |= bit;
+            const bi=Math.floor(r/3)*3 + Math.floor(c/3);
+            const bit=BIT(forced);
+            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit) return 0;
+            ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit;
           }
         }
         idx++;
       }
 
-      // === 4) バックトラックで 0/1/2解カウント ===
-      const order = []; // 検索対象の var indices
-      for (let i=0;i<vars.length;i++){ if (!fixedVal.has(i)) order.push(i); }
-
-      // MRV: 許容ドメインサイズの小さい順に並べ替え（初期見積もり）
+      const order=[]; for (let i=0;i<vars.length;i++) if(!fixedVal.has(i)) order.push(i);
+      function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
+      function ctz(x){ let n=0; while(((x>>>n)&1)===0) n++; return n; }
       function domainMaskOfVar(varIdx){
-        const v = vars[varIdx];
-        let mask = ALL;
-        for (const {b,r,c} of v){
-          const bi=Math.floor(r/3)*3 + Math.floor(c/3);
-          const forbid = ROW[b][r] | COL[b][c] | BOX[b][bi];
-          mask &= (ALL ^ forbid);
-          if (mask===0) break;
-        }
+        const v=vars[varIdx]; let mask=ALL;
+        for (const {b,r,c} of v){ const bi=Math.floor(r/3)*3 + Math.floor(c/3); const forbid=ROW[b][r]|COL[b][c]|BOX[b][bi]; mask &= (ALL ^ forbid); if (!mask) break; }
         return mask;
       }
-      order.sort((a,b)=>{
-        const da = domainMaskOfVar(a), db = domainMaskOfVar(b);
-        return popcnt(da) - popcnt(db);
-      });
+      order.sort((a,b)=>popcnt(domainMaskOfVar(a)) - popcnt(domainMaskOfVar(b)));
 
-      let solutions = 0;
-      let nodes = 0;
-      const LIMIT_NODES = 250000; // 重すぎ対策
-
+      let solutions=0, nodes=0; const LIMIT_NODES=250000;
       (function dfs(k){
-        if (solutions>=2) return;        // 打ち切り
-        if (nodes++ > LIMIT_NODES) return; // 打ち切り（未判定扱いにしない：ここは「2未満」）
-
-        if (k === order.length){ solutions++; return; }
-
-        const vi = order[k];
-        let mask = domainMaskOfVar(vi);
-        if (mask === 0) return;
-
-        // 候補の並びを少し絞る（低い数から）
-        while (mask){
-          const v = ctz(mask); mask &= mask-1; // 最下位ビット
-          const bit = 1<<v;
-
-          // 置けるか最終確認し、置く
-          const occs = vars[vi];
-          let ok = true; const touched = [];
+        if (solutions>=2 || nodes++>LIMIT_NODES) return;
+        if (k===order.length){ solutions++; return; }
+        const vi=order[k]; let mask=domainMaskOfVar(vi); if(!mask) return;
+        while(mask){
+          const v=ctz(mask); mask&=mask-1; const bit=1<<v;
+          const occs=vars[vi]; let ok=true; const touched=[];
           for (const {b,r,c} of occs){
             const bi=Math.floor(r/3)*3 + Math.floor(c/3);
             if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit){ ok=false; break; }
-            ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit;
-            touched.push({b,r,c,bi});
+            ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit; touched.push({b,r,c,bi});
           }
-          if (ok){
-            dfs(k+1);
-          }
-          // 戻す
-          for (const {b,r,c,bi} of touched){
-            ROW[b][r]&=~bit; COL[b][c]&=~bit; BOX[b][bi]&=~bit;
-          }
+          if (ok) dfs(k+1);
+          for (const {b,r,c,bi} of touched){ ROW[b][r]&=~bit; COL[b][c]&=~bit; BOX[b][bi]&=~bit; }
           if (solutions>=2) return;
         }
       })();
-
-      return Math.min(solutions, 2);
-
-      // 補助: popcount / ctz
-      function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
-      function ctz(x){ let n=0; while(((x>>>n)&1)===0) n++; return n; }
+      return Math.min(solutions,2);
     }
 
     // ===== 保存/復元/初期化 =====
@@ -547,9 +545,10 @@
     }
     window.addEventListener('resize', ()=>{ resizeCanvasToDisplaySize(); draw(); autoFitIfOverflow(); });
 
+    // ===== 起動 =====
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('盤を追加 →「合体問題を作成」。Spaceドラッグでパン / Ctrl+ホイールでズーム（縦は3セル単位）');
+      setStatus('盤を追加 →「合体問題を作成」。Spaceドラッグ/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）。');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
@@ -649,11 +648,11 @@
       return true;
     }
     function generateLocallyOnce(layout, difficulty='normal'){
-      const HINT = {easy:40, normal:36, hard:30}[difficulty] ?? 36;
+      const hint = HINTS[difficulty] ?? HINTS.normal;
       const nlayout=normalizeLayout(layout);
       const pattern=makeGlobalPattern();
       const solved = nlayout.map(({ox,oy})=> Array.from({length:GRID},(_,r)=> Array.from({length:GRID},(_,c)=> pattern.valueAt(oy+r, ox+c))));
-      let puzzles = solved.map(g=>carveBoard(g,HINT));
+      let puzzles = solved.map(g=>carveBoard(g,hint));
       const overlaps=buildOverlaps(nlayout);
       unifyGivenCells(puzzles,overlaps); enforceOverlapBySolution(puzzles,solved,overlaps);
       for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i],solved[i]);
