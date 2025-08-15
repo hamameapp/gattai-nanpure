@@ -1,280 +1,379 @@
-// 合体ナンプレ生成API（Cloudflare Pages Functions）
-// - 複数の9x9盤をレイアウトで受け取り、重なり（共有マス）を同じ数字に揃えた上で生成
-// - 共有マスは “同じグローバル座標” を指すように統合し、前盤の確定値を後盤に prefill して解く
-// - 失敗時はバックトラック（前の盤を作り直す）で整合解を探索
+// script.js — フロント専用（ブラウザで実行）。export, import は使わない！
+// 複数9x9盤をキャンバス上で配置し、/api/generate に layout を投げて合体ナンプレを生成する。
 
-// ====== 基本設定 ======
-const GRID = 9;
-const CELL_PX = 40; // クライアントの1マスpx（キャンバスのスナップ幅と一致させる）
-const GEN_TIME_BUDGET_MS = 2500; // サーバ側生成の時間予算（長すぎるとタイムアウトの元に）
-const PER_BOARD_TRIES = 40;      // 1盤あたりのリトライ上限
+(() => {
+  document.addEventListener('DOMContentLoaded', () => {
+    // ===== DOM =====
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const statusDiv = document.getElementById('status');
 
-// ====== 共通ユーティリティ ======
-const now = () => Date.now();
+    const addSquareButton = byId('addSquareButton');
+    const deleteButton = byId('deleteButton');
+    const generateProblemButton = byId('generateProblemButton');
+    const editLayoutButton = byId('editLayoutButton');
+    const checkButton = byId('checkButton');
+    const solveButton = byId('solveButton');
+    const clearUserInputButton = byId('clearUserInputButton');
+    const exportTextButton = byId('exportTextButton');
 
-const json = (data, status = 200) =>
-  new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
+    // ===== 定数（フロント側の1マス=40px。サーバ側 CELL_PX と一致させる） =====
+    const GRID = 9;
+    const CELL = 40;
+    const BOARD_PIX = GRID * CELL; // 360px
+    const SNAP = CELL;             // 盤ドラッグはマス単位でスナップ
+    const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
 
-async function checkQuota(env, ip) {
-  if (!env.QUOTA) return true;
-  const key = `quota:${new Date().toISOString().slice(0,10)}:${ip}`;
-  const used = parseInt((await env.QUOTA.get(key)) || "0", 10);
-  const DAILY_LIMIT = parseInt(env.DAILY_LIMIT || "20", 10);
-  if (used >= DAILY_LIMIT) return false;
-  await env.QUOTA.put(key, String(used + 1), { expirationTtl: 60 * 60 * 26 });
-  return true;
-}
+    // ===== 状態 =====
+    let squares = []; // { id, x, y, w, h, problemData, userData, checkData, solutionData }
+    let isProblemGenerated = false;
+    let editMode = true;
+    let activeSquareId = null;
+    let activeCell = null; // {id,r,c}
+    let drag = null;       // {id, offsetX, offsetY}
 
-// ====== 9x9 ソルバ（prefill対応） ======
-const empty9 = () => Array.from({ length: GRID }, () => Array(GRID).fill(0));
+    // ===== ユーティリティ =====
+    function byId(id) { return document.getElementById(id) || null; }
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function snap(v, unit) { return Math.round(v / unit) * unit; }
+    function createEmptyGrid() {
+      return Array.from({ length: GRID }, () => Array(GRID).fill(0));
+    }
+    function nextId() {
+      let m = 0; for (const s of squares) m = Math.max(m, Number(s.id) || 0);
+      return String(m + 1);
+    }
+    function newSquare(x, y) {
+      const id = nextId();
+      return {
+        id, x, y,
+        w: BOARD_PIX, h: BOARD_PIX,
+        problemData: createEmptyGrid(),
+        userData: createEmptyGrid(),
+        checkData: createEmptyGrid(),
+        solutionData: createEmptyGrid(),
+      };
+    }
+    function setStatus(msg) { if (statusDiv) statusDiv.textContent = msg; }
+    function updateButtonStates() {
+      if (generateProblemButton) generateProblemButton.disabled = squares.length === 0;
+      if (deleteButton) deleteButton.disabled = activeSquareId == null;
+      if (editLayoutButton) editLayoutButton.textContent = editMode ? 'レイアウト固定' : 'レイアウト編集';
+      if (checkButton) checkButton.disabled = !isProblemGenerated;
+      if (clearUserInputButton) clearUserInputButton.disabled = !isProblemGenerated;
+      if (solveButton) { solveButton.disabled = true; solveButton.title = '解答返却未実装'; }
+      if (exportTextButton) exportTextButton.disabled = squares.length === 0;
+    }
 
-function isSafe(g, r, c, n) {
-  for (let i = 0; i < GRID; i++) if (g[r][i] === n || g[i][c] === n) return false;
-  const br = (r / 3 | 0) * 3, bc = (c / 3 | 0) * 3;
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
-    if (g[br + i][bc + j] === n) return false;
-  return true;
-}
-
-const randDigits = () => {
-  const a = [1,2,3,4,5,6,7,8,9];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-};
-
-// prefill: Map<idx(0..80), digit>
-function makeSolvedWithPrefill(prefill, timeLimitAt) {
-  const g = empty9();
-  // 事前に置く（矛盾があれば失敗）
-  for (const [idx, v] of prefill.entries()) {
-    const r = (idx / 9) | 0, c = idx % 9;
-    if (v < 1 || v > 9) return null;
-    if (!isSafe(g, r, c, v)) return null;
-    g[r][c] = v;
-  }
-
-  const order = [...Array(81).keys()];
-  // 空セル優先順序：prefillで埋まってないセルを先に、行列分散のためシャッフル
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-
-  function dfs(pos = 0) {
-    if (now() > timeLimitAt) return false;
-    if (pos === 81) return true;
-    const idx = order[pos];
-    const r = (idx / 9) | 0, c = idx % 9;
-    if (g[r][c] !== 0) return dfs(pos + 1);
-    for (const n of randDigits()) {
-      if (isSafe(g, r, c, n)) {
-        g[r][c] = n;
-        if (dfs(pos + 1)) return true;
-        g[r][c] = 0;
+    // ===== キャンバス描画 =====
+    function draw() {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (const s of squares) drawBoard(s);
+      if (activeCell && !editMode) {
+        const s = squares.find(x => String(x.id) === String(activeCell.id));
+        if (s) {
+          ctx.save();
+          ctx.globalAlpha = 0.25;
+          ctx.fillStyle = '#66aaff';
+          const x = s.x + activeCell.c * CELL;
+          const y = s.y + activeCell.r * CELL;
+          ctx.fillRect(x, y, CELL, CELL);
+          ctx.restore();
+        }
       }
     }
-    return false;
-  }
 
-  if (!dfs(0)) return null;
-  return g;
-}
-
-// ====== ヒント削り（対称・共有マス整合対応） ======
-function carve(grid, hintTarget = 36) {
-  const g = grid.map(r => r.slice());
-  const cells = Array.from({ length: 81 }, (_, i) => i);
-  for (let i = cells.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [cells[i], cells[j]] = [cells[j], cells[i]];
-  }
-  let toRemove = 81 - hintTarget;
-  for (const idx of cells) {
-    if (toRemove <= 0) break;
-    const r = (idx / 9) | 0, c = idx % 9;
-    const or = 8 - r, oc = 8 - c;
-    if (g[r][c] === 0 && g[or][oc] === 0) continue;
-    g[r][c] = 0;
-    g[or][oc] = 0;
-    toRemove -= (r === or && c === oc) ? 1 : 2;
-  }
-  return g;
-}
-
-// ====== 合体処理 ======
-// layout: [{id, x(px), y(px)}] → boards with cell offsets
-function normalizeLayout(layout) {
-  return layout.map(o => ({
-    id: String(o.id),
-    ox: Math.round((o.x || 0) / CELL_PX),
-    oy: Math.round((o.y || 0) / CELL_PX),
-  }));
-}
-
-// 各盤の (r,c) -> グローバル座標 (R,C)
-function toGlobal(ox, oy, r, c) {
-  return { R: oy + r, C: ox + c };
-}
-
-// 共有マスの抽出：pairごとに交差矩形（0..8）で重なりを拾う
-function buildOverlaps(nlayout) {
-  const n = nlayout.length;
-  const overlaps = Array.from({ length: n }, () => []); // overlaps[i]: [{j, cells:[{r,c,r2,c2}]}]
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const A = nlayout[i], B = nlayout[j];
-      const rx0 = Math.max(0, B.oy - A.oy);
-      const ry0 = Math.max(0, B.ox - A.ox);
-      const rx1 = Math.min(8, (B.oy + 8) - A.oy);
-      const ry1 = Math.min(8, (B.ox + 8) - A.ox);
-      // ※ ここ、Rが縦(=y)、Cが横(=x)なので注意
-      const R0 = Math.max(0, B.oy - A.oy);
-      const C0 = Math.max(0, B.ox - A.ox);
-      const R1 = Math.min(8, (B.oy + 8) - A.oy);
-      const C1 = Math.min(8, (B.ox + 8) - A.ox);
-      if (R0 <= R1 && C0 <= C1) {
-        const cells = [];
-        for (let r = R0; r <= R1; r++) {
-          for (let c = C0; c <= C1; c++) {
-            const r2 = r + A.oy - B.oy;
-            const c2 = c + A.ox - B.ox;
-            cells.push({ r, c, r2, c2 });
+    function drawBoard(s) {
+      ctx.save();
+      const isActive = String(s.id) === String(activeSquareId);
+      // 外枠
+      ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
+      ctx.lineWidth = isActive ? 3 : 1.5;
+      ctx.strokeRect(s.x - 0.5, s.y - 0.5, s.w + 1, s.h + 1);
+      // 格子
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#aaa';
+      for (let i = 1; i < GRID; i++) {
+        const gx = s.x + i * CELL, gy = s.y + i * CELL;
+        ctx.beginPath(); ctx.moveTo(gx + 0.5, s.y); ctx.lineTo(gx + 0.5, s.y + s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x, gy + 0.5); ctx.lineTo(s.x + s.w, gy + 0.5); ctx.stroke();
+      }
+      // 太線（3x3）
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#333';
+      for (let i = 0; i <= GRID; i += 3) {
+        const gx = s.x + i * CELL + 0.5, gy = s.y + i * CELL + 0.5;
+        ctx.beginPath(); ctx.moveTo(gx, s.y); ctx.lineTo(gx, s.y + s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x, gy); ctx.lineTo(s.x + s.w, gy); ctx.stroke();
+      }
+      // 数字
+      ctx.font = FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let r = 0; r < GRID; r++) {
+        for (let c = 0; c < GRID; c++) {
+          const px = s.x + c * CELL + CELL / 2;
+          const py = s.y + r * CELL + CELL / 2;
+          const giv = s.problemData[r][c] | 0;
+          const usr = s.userData[r][c] | 0;
+          if (giv > 0) {
+            ctx.fillStyle = '#000';
+            ctx.fillText(String(giv), px, py);
+          } else if (usr > 0) {
+            const bad = (s.checkData[r][c] | 0) === 1;
+            ctx.fillStyle = bad ? '#d11' : '#2b90ff';
+            ctx.fillText(String(usr), px, py);
           }
         }
-        overlaps[i].push({ j, cells });
-        overlaps[j].push({
-          j: i,
-          cells: cells.map(({ r, c, r2, c2 }) => ({ r: r2, c: c2, r2: r, c2: c }))
-        });
+      }
+      // IDラベル
+      ctx.fillStyle = isActive ? '#2b90ff' : '#666';
+      ctx.fillRect(s.x, s.y - 18, 26, 18);
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s.id, s.x + 13, s.y - 9);
+
+      ctx.restore();
+    }
+
+    // ===== ヒット判定 =====
+    function boardAt(x, y) {
+      for (let i = squares.length - 1; i >= 0; i--) {
+        const s = squares[i];
+        if (x >= s.x && x < s.x + s.w && y >= s.y && y < s.y + s.h) return s;
+      }
+      return null;
+    }
+    function cellAt(s, x, y) {
+      if (!s) return null;
+      const cx = Math.floor((x - s.x) / CELL);
+      const cy = Math.floor((y - s.y) / CELL);
+      if (cx < 0 || cy < 0 || cx >= GRID || cy >= GRID) return null;
+      return { id: s.id, r: cy, c: cx };
+    }
+
+    // ===== 入力（マウス） =====
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const s = boardAt(mx, my);
+      if (editMode) {
+        if (!s) { activeSquareId = null; activeCell = null; draw(); updateButtonStates(); return; }
+        activeSquareId = s.id; activeCell = null;
+        drag = { id: s.id, offsetX: mx - s.x, offsetY: my - s.y };
+      } else {
+        if (!s) { activeSquareId = null; activeCell = null; draw(); updateButtonStates(); return; }
+        activeSquareId = s.id; activeCell = cellAt(s, mx, my); draw();
+      }
+      updateButtonStates();
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (!drag || !editMode) return;
+      const s = squares.find(x => String(x.id) === String(drag.id));
+      if (!s) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      let nx = mx - drag.offsetX, ny = my - drag.offsetY;
+      nx = snap(nx, SNAP); ny = snap(ny, SNAP);
+      nx = clamp(nx, 0, canvas.width - s.w);
+      ny = clamp(ny, 0, canvas.height - s.h);
+      s.x = nx; s.y = ny; draw();
+    });
+    window.addEventListener('mouseup', () => { drag = null; });
+
+    // ===== 入力（キーボード：プレイ） =====
+    window.addEventListener('keydown', (e) => {
+      if (editMode || !isProblemGenerated || !activeCell) return;
+      const s = squares.find(x => String(x.id) === String(activeCell.id));
+      if (!s) return;
+      if (s.problemData[activeCell.r][activeCell.c] > 0) return; // 与えマスは編集不可
+
+      if (e.key >= '1' && e.key <= '9') {
+        s.userData[activeCell.r][activeCell.c] = parseInt(e.key, 10);
+        s.checkData[activeCell.r][activeCell.c] = 0;
+        draw(); e.preventDefault(); return;
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') {
+        s.userData[activeCell.r][activeCell.c] = 0;
+        s.checkData[activeCell.r][activeCell.c] = 0;
+        draw(); e.preventDefault(); return;
+      }
+      const mv = { ArrowUp: [-1,0], ArrowDown:[1,0], ArrowLeft:[0,-1], ArrowRight:[0,1] }[e.key];
+      if (mv) {
+        const nr = clamp(activeCell.r + mv[0], 0, GRID-1);
+        const nc = clamp(activeCell.c + mv[1], 0, GRID-1);
+        activeCell = { id: activeCell.id, r: nr, c: nc }; draw(); e.preventDefault();
+      }
+    });
+
+    // ===== ボタン =====
+    addSquareButton && addSquareButton.addEventListener('click', () => {
+      const count = squares.length, col = count % 3, row = Math.floor(count / 3);
+      const margin = 24;
+      const nx = margin + col * (BOARD_PIX + margin);
+      const ny = 40 + row * (BOARD_PIX + margin);
+      const s = newSquare(snap(nx, SNAP), snap(ny, SNAP));
+      squares.push(s);
+      activeSquareId = s.id; isProblemGenerated = false;
+      setStatus('盤を追加しました'); updateButtonStates(); draw();
+    });
+    deleteButton && deleteButton.addEventListener('click', () => {
+      if (activeSquareId == null) return;
+      squares = squares.filter(s => String(s.id) !== String(activeSquareId));
+      activeSquareId = null; activeCell = null;
+      isProblemGenerated = squares.length > 0 && isProblemGenerated;
+      setStatus('選択中の盤を削除しました'); updateButtonStates(); draw();
+    });
+    editLayoutButton && editLayoutButton.addEventListener('click', () => {
+      editMode = !editMode; activeCell = null;
+      setStatus(editMode ? 'レイアウト編集モード' : 'プレイモード');
+      updateButtonStates(); draw();
+    });
+    generateProblemButton && generateProblemButton.addEventListener('click', handleGenerateProblem);
+    clearUserInputButton && clearUserInputButton.addEventListener('click', () => {
+      if (!isProblemGenerated) return;
+      for (const s of squares) { s.userData = createEmptyGrid(); s.checkData = createEmptyGrid(); }
+      setStatus('入力をクリアしました'); draw();
+    });
+    checkButton && checkButton.addEventListener('click', () => {
+      if (!isProblemGenerated) return;
+      for (const s of squares) runCheck(s);
+      setStatus('重複チェックを実行しました（赤＝矛盾）'); draw();
+    });
+    solveButton && solveButton.addEventListener('click', () => {
+      alert('解答表示は未実装です（サーバが solution を返したら有効化）。');
+    });
+    exportTextButton && exportTextButton.addEventListener('click', () => {
+      const data = {
+        layout: squares.map(s => ({ id: s.id, x: s.x, y: s.y })),
+        boards: squares.map(s => ({ id: s.id, problem: s.problemData, user: s.userData }))
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'gattai_export.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // ===== 生成処理 =====
+    async function handleGenerateProblem() {
+      if (squares.length === 0) { alert('まず「盤面を追加」してください'); return; }
+      for (const sq of squares) {
+        sq.problemData = createEmptyGrid(); sq.userData = createEmptyGrid();
+        sq.checkData = createEmptyGrid(); sq.solutionData = createEmptyGrid();
+      }
+      isProblemGenerated = false; updateButtonStates(); draw();
+
+      try {
+        generateProblemButton.disabled = true;
+        setStatus('問題を生成しています...');
+        const layout = squares.map(s => ({ id: String(s.id), x: s.x, y: s.y }));
+        const boards = await generateFromServer(layout, false, 'normal');
+        renderBoards(boards);
+        isProblemGenerated = true;
+        setStatus(`問題を作成しました！（${boards.length}盤）`);
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || 'サーバ生成に失敗しました');
+        setStatus('サーバ生成に失敗しました');
+      } finally {
+        generateProblemButton.disabled = false; updateButtonStates(); draw();
       }
     }
-  }
-  return overlaps;
-}
 
-// 連結成分の順序（BFS）を取って “重なりがある盤から順に” 解く
-function orderBoards(overlaps) {
-  const n = overlaps.length;
-  const seen = new Array(n).fill(false);
-  const order = [];
-  for (let s = 0; s < n; s++) {
-    if (seen[s]) continue;
-    const q = [s];
-    seen[s] = true;
-    while (q.length) {
-      const i = q.shift();
-      order.push(i);
-      for (const e of overlaps[i]) {
-        const j = e.j;
-        if (!seen[j]) { seen[j] = true; q.push(j); }
+    async function generateFromServer(layout, adShown=false, difficulty='normal') {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ layout, adShown, difficulty })
+      });
+      if (!res.ok) {
+        const t = await safeText(res);
+        throw new Error(`APIエラー: ${res.status} ${t}`);
+      }
+      const data = await res.json();
+      if (!data?.ok) throw new Error(data?.reason || 'ok=false');
+      return data.puzzle?.boards || [];
+    }
+    async function safeText(res) { try { return await res.text(); } catch { return ''; } }
+
+    function renderBoards(boards) {
+      const map = new Map(boards.map(b => [String(b.id), b]));
+      for (const sq of squares) {
+        const b = map.get(String(sq.id));
+        if (!b) continue;
+        sq.problemData = cloneGrid(b.grid);
+        sq.userData = createEmptyGrid();
+        sq.checkData = createEmptyGrid();
+        // 位置はサーバ値を反映したい場合は以下を有効化
+        // sq.x = b.x; sq.y = b.y;
+      }
+      updateButtonStates(); draw();
+    }
+    function cloneGrid(g) { return g.map(r => r.slice()); }
+
+    // ===== 重複チェック =====
+    function runCheck(sq) {
+      sq.checkData = createEmptyGrid();
+      const val = (r, c) => (sq.userData[r][c] || sq.problemData[r][c] || 0);
+      // 行
+      for (let r = 0; r < GRID; r++) {
+        const seen = new Map();
+        for (let c = 0; c < GRID; c++) {
+          const v = val(r, c); if (v === 0) continue;
+          if (seen.has(v)) { sq.checkData[r][c] = 1; const [rr,cc]=seen.get(v); sq.checkData[rr][cc]=1; }
+          else seen.set(v, [r, c]);
+        }
+      }
+      // 列
+      for (let c = 0; c < GRID; c++) {
+        const seen = new Map();
+        for (let r = 0; r < GRID; r++) {
+          const v = val(r, c); if (v === 0) continue;
+          if (seen.has(v)) { sq.checkData[r][c] = 1; const [rr,cc]=seen.get(v); sq.checkData[rr][cc]=1; }
+          else seen.set(v, [r, c]);
+        }
+      }
+      // ブロック
+      for (let br = 0; br < GRID; br += 3) {
+        for (let bc = 0; bc < GRID; bc += 3) {
+          const seen = new Map();
+          for (let dr = 0; dr < 3; dr++) for (let dc = 0; dc < 3; dc++) {
+            const r = br + dr, c = bc + dc;
+            const v = val(r, c); if (v === 0) continue;
+            if (seen.has(v)) { sq.checkData[r][c] = 1; const [rr,cc]=seen.get(v); sq.checkData[rr][cc]=1; }
+            else seen.set(v, [r, c]);
+          }
+        }
       }
     }
-  }
-  return order; // 複数成分がある場合も全部含む
-}
 
-// すでに解いた盤群 → 現在の盤への prefill を構成
-function makePrefillForBoard(i, solved, overlaps) {
-  const mp = new Map(); // idx -> digit
-  for (const e of overlaps[i]) {
-    const j = e.j;
-    const solvedJ = solved[j];
-    if (!solvedJ) continue;
-    for (const { r, c, r2, c2 } of e.cells) {
-      const v = solvedJ[r2][c2];
-      const idx = r * 9 + c;
-      // 既に別の隣接盤から違う値が来ていたら矛盾
-      if (mp.has(idx) && mp.get(idx) !== v) return null;
-      mp.set(idx, v);
-    }
-  }
-  return mp;
-}
-
-// ====== メイン ======
-export const onRequestPost = async ({ request, env }) => {
-  const ip = request.headers.get("CF-Connecting-IP") || "0.0.0.0";
-  if (!(await checkQuota(env, ip))) {
-    return json({ ok: false, reason: "daily limit exceeded" }, 429);
-  }
-
-  let body = {};
-  try { body = await request.json(); } catch {}
-
-  const layout = Array.isArray(body.layout) ? body.layout : [];
-  if (layout.length === 0) return json({ ok: false, reason: "layout required" }, 400);
-  if (layout.length > parseInt(env.MAX_BOARDS || "40", 10)) {
-    return json({ ok: false, reason: "too many boards" }, 400);
-  }
-
-  const nlayout = normalizeLayout(layout);
-  const overlaps = buildOverlaps(nlayout);
-  const order = orderBoards(overlaps);
-
-  const tEnd = now() + Math.min(parseInt(env.GEN_TIMEOUT_MS || "3500", 10), GEN_TIME_BUDGET_MS);
-  const solved = new Array(nlayout.length); // 各盤の完成盤
-
-  // 盤順に “重なりを尊重して” 解く（バックトラック付き）
-  function solveAll(k = 0) {
-    if (now() > tEnd) return false;
-    if (k >= order.length) return true;
-    const i = order[k];
-
-    // 既に確定済み（別成分からの再訪など）はスキップ
-    if (solved[i]) return solveAll(k + 1);
-
-    // 現在の盤の prefill（共有マス）を作る
-    const pre = makePrefillForBoard(i, solved, overlaps);
-    if (pre === null) {
-      // 共有マスで矛盾が出た → 戻る
-      return false;
-    }
-
-    // この盤を作る（失敗したら何度かやり直し）
-    for (let tr = 0; tr < PER_BOARD_TRIES && now() <= tEnd; tr++) {
-      const g = makeSolvedWithPrefill(pre, tEnd);
-      if (!g) continue; // 作れなかった → 別順序で再挑戦
-      solved[i] = g;
-      if (solveAll(k + 1)) return true;
-      solved[i] = undefined; // 戻す
-    }
-    return false;
-  }
-
-  const ok = solveAll(0);
-  if (!ok) {
-    return json({ ok: false, reason: "generation failed (timeout or impossible overlap)" }, 500);
-  }
-
-  // ====== 問題化（削り） ======
-  const hintTarget = 36; // 将来 difficulty で調整
-  const puzzles = solved.map(g => carve(g, hintTarget));
-
-  // 共有マスの “数字の整合” を最後にもう一度合わせる（片方だけ与えられて他方が0のケースを揃える）
-  for (let i = 0; i < nlayout.length; i++) {
-    for (const e of overlaps[i]) {
-      const j = e.j;
-      for (const { r, c, r2, c2 } of e.cells) {
-        const a = puzzles[i][r][c], b = puzzles[j][r2][c2];
-        if (a !== 0 && b === 0) puzzles[j][r2][c2] = a;
-        else if (b !== 0 && a === 0) puzzles[i][r][c] = b;
+    // ===== キャンバスの実サイズを CSS に同期（aspect-ratio を使っているため） =====
+    function resizeCanvasToDisplaySize() {
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(600, Math.floor(rect.width));
+      const h = Math.max(450, Math.floor(rect.height)); // 4:3
+      // デバイスピクセル比に合わせて解像度を上げる
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const displayWidth = Math.floor(w * dpr);
+      const displayHeight = Math.floor(h * dpr);
+      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        canvas.width = displayWidth;
+        canvas.height = displayHeight;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 座標系はCSSピクセル基準に戻す
+        draw();
       }
     }
-  }
+    resizeCanvasToDisplaySize();
+    window.addEventListener('resize', () => {
+      resizeCanvasToDisplaySize(); draw();
+    });
 
-  // レスポンス整形（クライアントのIDと座標を透過）
-  const boards = nlayout.map((o, idx) => ({
-    id: layout[idx].id,
-    x: layout[idx].x || 0,
-    y: layout[idx].y || 0,
-    grid: puzzles[idx],
-  }));
-
-  return json({ ok: true, puzzle: { boards } });
-};
+    // ===== 初期表示 =====
+    setStatus('レイアウト編集モード：盤を追加して配置してください');
+    updateButtonStates();
+    draw();
+  });
+})();
