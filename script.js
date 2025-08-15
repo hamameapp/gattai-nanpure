@@ -1,12 +1,11 @@
-// script.js — Cloudflare Pages フロント（サーバ生成＋画像保存でID帯を除外）
-//
+// script.js — Cloudflare Pages フロント（画像保存ではID帯を描かない）
 // ・ズーム/パン（Space/右/中ドラッグ + Ctrl+ホイール + ホイールパン）
 // ・盤面追加は「いま見ている中心」に生成
 // ・Yは3セル単位スナップ
-// ・サーバ生成
+// ・サーバ生成（/api/generate）
 // ・矛盾チェック（行/列/箱/共有）
 // ・解答トグル
-// ・エクスポート：JSON保存、PNG保存（画面/全体）※画像保存時はID帯を描かない
+// ・エクスポート：JSON保存、PNG保存（画面/全体）※画像保存時はID帯を省略
 // ・保存キー: v4
 
 (() => {
@@ -17,16 +16,19 @@
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
     const statusDiv = document.getElementById('status');
+
     const addSquareButton = byId('addSquareButton');
     const deleteButton = byId('deleteButton');
     const clearAllBoardsButton = byId('clearAllBoardsButton');
     const generateProblemButton = byId('generateProblemButton');
     const checkButton = byId('checkButton');
     const solveButton = byId('solveButton');
+
     const exportTextButton = byId('exportTextButton');
     const exportImageButton = byId('exportImageButton');
     const exportImageAllButton = byId('exportImageAllButton');
-    const difficultySel = document.getElementById('difficulty');
+
+    const difficultySel = byId('difficulty');
 
     // ズームUI
     const zoomOutBtn = byId('zoomOut');
@@ -50,8 +52,10 @@
     let isProblemGenerated = false;
     let activeSquareId = null;
     let activeCell = null;
+
     let drag = null;
     let panning = false, isSpaceDown = false, panStart = null;
+
     let zoom = 1.0, panX = 0, panY = 0;
     let devicePR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     let showSolution = false;
@@ -68,14 +72,14 @@
     function updateButtonStates(){
       zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
       const hasSquares = squares.length > 0;
-      generateProblemButton && (generateProblemButton.disabled = !hasSquares);
-      deleteButton && (deleteButton.disabled = activeSquareId == null);
-      clearAllBoardsButton && (clearAllBoardsButton.disabled = !hasSquares);
-      checkButton && (checkButton.disabled = !hasSquares || !isProblemGenerated || showSolution);
-      exportTextButton && (exportTextButton.disabled = !hasSquares);
-      exportImageButton && (exportImageButton.disabled = !hasSquares);
-      exportImageAllButton && (exportImageAllButton.disabled = !hasSquares);
+      if (generateProblemButton) generateProblemButton.disabled = !hasSquares;
+      if (deleteButton) deleteButton.disabled = (activeSquareId == null);
+      if (clearAllBoardsButton) clearAllBoardsButton.disabled = !hasSquares;
+      if (checkButton) checkButton.disabled = (!hasSquares || !isProblemGenerated || showSolution);
       if (solveButton){ solveButton.disabled = !isProblemGenerated; solveButton.textContent = showSolution ? '解答を隠す' : '解答を表示'; }
+      if (exportTextButton) exportTextButton.disabled = !hasSquares;
+      if (exportImageButton) exportImageButton.disabled = !hasSquares;
+      if (exportImageAllButton) exportImageAllButton.disabled = !hasSquares;
     }
 
     // ===== ズーム/パン =====
@@ -97,7 +101,7 @@
     function fitZoom(margin=40){
       const rect=canvas.getBoundingClientRect();
       const {minX,minY,maxX,maxY}=contentBounds(); const w=Math.max(1,maxX-minX), h=Math.max(1,maxY-minY);
-      const z=clamp(Math.min((rect.width-margin*2)/w, (rect.height-margin*2)/h), MIN_ZOOM, MAX_ZOOM);
+      const z=clamp(Math.min((rect.width-margin*2)/w,(rect.height-margin*2)/h), MIN_ZOOM, MAX_ZOOM);
       zoom=z; const sw=w*z, sh=h*z;
       panX=(rect.width - sw)/2 - minX*z; panY=(rect.height - sh)/2 - minY*z;
       applyTransform(); draw(); updateButtonStates(); saveState();
@@ -115,6 +119,7 @@
     zoom100Btn?.addEventListener('click',()=>setZoom(1));
     zoomFitBtn?.addEventListener('click',fitZoom);
 
+    // ホイール操作
     canvas.addEventListener('wheel', (e)=>{
       const rect=canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey){
@@ -149,9 +154,9 @@
 
     // ===== 描画 =====
     function draw(){
-      // 背景
+      // 背景をクリア
       ctx.save(); ctx.setTransform(devicePR,0,0,devicePR,0,0); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore();
-      // 盤
+      // 盤面
       applyTransform();
       for (const s of squares) drawBoardGeneric(ctx, s, /*omitLabels*/false);
       // セル選択
@@ -162,7 +167,7 @@
       }
     }
 
-    // 共通の描画（contextを指定。画像保存用に omitLabels を切り替え）
+    // 盤面描画（画像保存時は omitLabels=true でID帯を描かない）
     function drawBoardGeneric(c2, s, omitLabels=false, ox=0, oy=0){
       c2.save();
       // 外枠
@@ -196,7 +201,7 @@
           c2.fillText(String(usr),px,py);
         }
       }
-      // ID帯（omitLabels=trueのときは描かない）
+      // ID帯（omitLabels=true のとき非表示）
       if (!omitLabels){
         c2.fillStyle=isActive?'#2b90ff':'#666';
         c2.fillRect(ox+s.x, oy+s.y-18, 30, 18);
@@ -240,9 +245,9 @@
       const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
       const ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
       const s={ id:nextId(), x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
-        problemData:createEmptyGrid(), userData=createEmptyGrid(), checkData=createEmptyGrid(), solutionData=createEmptyGrid(), _userBackup:null };
+        problemData:createEmptyGrid(), userData:createEmptyGrid(), checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
-      setStatus('盤を追加：いま見ている中心に生成しました（Space/右ドラッグでパン、Ctrl+ホイールでズーム）');
+      setStatus('盤を追加：中心に生成しました（Space/右ドラッグでパン、Ctrl+ホイールでズーム）');
       updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
     deleteButton?.addEventListener('click',()=>{
@@ -511,7 +516,7 @@
     // 起動
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('盤を追加 →「合体問題を作成」。Space/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）');
+      setStatus('「盤面を追加」を押して配置 → 「合体問題を作成」。Space/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
