@@ -3,7 +3,7 @@
 // ・盤面追加は「いま見ている中心」に生成（移動が楽）
 // ・Yは3セル単位でスナップ（箱崩れ防止）
 // ・ローカル生成（安全バリデーション）/ サーバ連携（オプション）
-// ・矛盾チェック（行/列/箱/共有）と唯一性チェック
+// ・矛盾チェック（行/列/箱/共有）と唯一性チェック（未判定=-1対応）
 // ・すべて削除ボタン復活
 // ・保存キー: v4
 
@@ -41,7 +41,6 @@
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
     const MIN_ZOOM = 0.1, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
-
     const HINTS = { easy: 40, normal: 36, hard: 30, expert: 28, extreme: 26 };
 
     // ===== 状態 =====
@@ -67,7 +66,6 @@
       const rect = canvas.getBoundingClientRect();
       const cx = rect.width / 2, cy = rect.height / 2; // 画面中心（CSS px）
       const world = toWorld(cx, cy);
-      // 盤面の左上に変換し、スナップ＆非負
       const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
       let ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
       const id = nextId();
@@ -139,7 +137,6 @@
         const mx=e.clientX-rect.left, my=e.clientY-rect.top;
         setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
       } else {
-        // パン
         e.preventDefault();
         if (e.shiftKey){
           panX -= e.deltaY; // 縦ホイールで横移動
@@ -151,11 +148,12 @@
       }
     }, { passive:false });
 
-    // ショートカット：F=Fit、+=拡大、-=縮小
+    // ショートカット：F=Fit、+=拡大、-=縮小、U=唯一性チェック
     window.addEventListener('keydown',(e)=>{
       if (e.code==='KeyF'){ e.preventDefault(); fitZoom(); }
       if (e.key==='+' || e.key==='='){ e.preventDefault(); setZoom(zoom+ZOOM_STEP); }
       if (e.key==='-' || e.key==='_'){ e.preventDefault(); setZoom(zoom-ZOOM_STEP); }
+      if (e.key.toLowerCase()==='u'){ e.preventDefault(); handleUniqueCheck(); }
     });
 
     // ===== 描画 =====
@@ -415,15 +413,16 @@
       const total=countConflicts(); setStatus(`矛盾チェック：${total} 件${total===0?'（OK）':''}`); return total;
     }
 
-    // ===== 唯一性チェック（複数解の有無）=====
+    // ===== 唯一性チェック（複数解の有無：0/1/2、未判定:-1）=====
     async function handleUniqueCheck(){
       if (!isProblemGenerated) return;
-      uniqueButton.disabled=true;
+      uniqueButton && (uniqueButton.disabled = true);
       setStatus('唯一性チェック中…（解が2つ見つかったら打ち切ります）');
       await new Promise(r=>requestAnimationFrame(r));
       try{
-        const result = checkUniquenessCombined();
-        if (result === 0) setStatus('解が存在しません（与えに矛盾）');
+        const result = checkUniquenessCombined(); // 0/1/2 または -1
+        if (result === -1) setStatus('計算量が大きすぎて判定できませんでした（盤面数を減らすか配置を調整してください）');
+        else if (result === 0) setStatus('解が存在しません（与えに矛盾）');
         else if (result === 1) setStatus('一意解です（唯一解）');
         else if (result === 2) setStatus('複数解があります（少なくとも2解）');
         else setStatus('判定できませんでした');
@@ -431,11 +430,10 @@
         console.error(e); alert('唯一性チェック中にエラーが発生しました');
         setStatus('唯一性チェックに失敗しました');
       }finally{
-        uniqueButton.disabled=false;
+        uniqueButton && (uniqueButton.disabled = false);
       }
     }
 
-    // 共有制約を含む全体CSPとして解を数える（0,1,2を返す）
     function checkUniquenessCombined(){
       const overlaps = buildOverlapsClient(squares);
       const idOf = (b,r,c)=> b*81 + r*9 + c;
@@ -468,7 +466,7 @@
         for (const {b,r,c} of v){
           const giv = squares[b].problemData[r][c]|0;
           if (giv>0){
-            if (forced===0) forced=giv; else if (forced!==giv) return 0;
+            if (forced===0) forced=giv; else if (forced!==giv) return 0; // 共有セル与え矛盾
           }
         }
         if (forced>0){
@@ -476,7 +474,7 @@
           for (const {b,r,c} of v){
             const bi=Math.floor(r/3)*3 + Math.floor(c/3);
             const bit=BIT(forced);
-            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit) return 0;
+            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit) return 0; // 盤内衝突
             ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit;
           }
         }
@@ -493,11 +491,18 @@
       }
       order.sort((a,b)=>popcnt(domainMaskOfVar(a)) - popcnt(domainMaskOfVar(b)));
 
-      let solutions=0, nodes=0; const LIMIT_NODES=250000;
+      // 探索（未判定 -1 を返すための limitHit フラグ）
+      let solutions=0, nodes=0;
+      const LIMIT_NODES = Math.max(100000, 100000 + order.length * 300);
+      let limitHit = false;
+
       (function dfs(k){
-        if (solutions>=2 || nodes++>LIMIT_NODES) return;
+        if (solutions>=2) return;
+        if (nodes++ > LIMIT_NODES){ limitHit = true; return; }
         if (k===order.length){ solutions++; return; }
-        const vi=order[k]; let mask=domainMaskOfVar(vi); if(!mask) return;
+
+        const vi=order[k];
+        let mask=domainMaskOfVar(vi); if(!mask) return;
         while(mask){
           const v=ctz(mask); mask&=mask-1; const bit=1<<v;
           const occs=vars[vi]; let ok=true; const touched=[];
@@ -508,10 +513,11 @@
           }
           if (ok) dfs(k+1);
           for (const {b,r,c,bi} of touched){ ROW[b][r]&=~bit; COL[b][c]&=~bit; BOX[b][bi]&=~bit; }
-          if (solutions>=2) return;
+          if (solutions>=2 || limitHit) return;
         }
       })();
-      return Math.min(solutions,2);
+
+      return limitHit ? -1 : Math.min(solutions,2);
     }
 
     // ===== 保存/復元/初期化 =====
@@ -548,7 +554,7 @@
     // ===== 起動 =====
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('盤を追加 →「合体問題を作成」。Spaceドラッグ/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）。');
+      setStatus('盤を追加 →「合体問題を作成」。Space/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）。');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
