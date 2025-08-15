@@ -17,11 +17,11 @@
     const clearUserInputButton = byId('clearUserInputButton');
     const exportTextButton = byId('exportTextButton');
 
-    // ===== 定数（フロント側の1マス=40px。サーバ側 CELL_PX と一致させる） =====
+    // ===== 定数（フロントの1マス=30px。サーバ側 CELL_PX と一致させる） =====
     const GRID = 9;
-    const CELL = 40;
-    const BOARD_PIX = GRID * CELL; // 360px
-    const SNAP = CELL;             // 盤ドラッグはマス単位でスナップ
+    const CELL = 30;            // ★サーバの CELL_PX と同じ値に！
+    const BOARD_PIX = GRID * CELL; // 270px
+    const SNAP = CELL;             // 盤ドラッグは「1マス単位」でスナップ
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
 
     // ===== 状態 =====
@@ -211,8 +211,8 @@
 
     // ===== ボタン =====
     addSquareButton && addSquareButton.addEventListener('click', () => {
-      const count = squares.length, col = count % 3, row = Math.floor(count / 3);
-      const margin = 24;
+      const count = squares.length, col = count % 4, row = Math.floor(count / 4);
+      const margin = 18;
       const nx = margin + col * (BOARD_PIX + margin);
       const ny = 40 + row * (BOARD_PIX + margin);
       const s = newSquare(snap(nx, SNAP), snap(ny, SNAP));
@@ -269,7 +269,7 @@
       try {
         generateProblemButton.disabled = true;
         setStatus('問題を生成しています...');
-        const layout = squares.map(s => ({ id: String(s.id), x: s.x, y: s.y }));
+        const layout = squares.map(s => ({ id: String(s.id), x: Math.round(s.x), y: Math.round(s.y) }));
         const boards = await generateFromServer(layout, false, 'normal');
         renderBoards(boards);
         isProblemGenerated = true;
@@ -307,7 +307,7 @@
         sq.problemData = cloneGrid(b.grid);
         sq.userData = createEmptyGrid();
         sq.checkData = createEmptyGrid();
-        // 位置はサーバ値を反映したい場合は以下を有効化
+        // 必要ならサーバ値で位置を調整
         // sq.x = b.x; sq.y = b.y;
       }
       updateButtonStates(); draw();
@@ -350,19 +350,18 @@
       }
     }
 
-    // ===== キャンバスの実サイズを CSS に同期（aspect-ratio を使っているため） =====
+    // ===== キャンバス実サイズをCSSに同期 =====
     function resizeCanvasToDisplaySize() {
       const rect = canvas.getBoundingClientRect();
       const w = Math.max(600, Math.floor(rect.width));
       const h = Math.max(450, Math.floor(rect.height)); // 4:3
-      // デバイスピクセル比に合わせて解像度を上げる
       const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
       const displayWidth = Math.floor(w * dpr);
       const displayHeight = Math.floor(h * dpr);
       if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
         canvas.width = displayWidth;
         canvas.height = displayHeight;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 座標系はCSSピクセル基準に戻す
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         draw();
       }
     }
