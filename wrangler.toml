@@ -2,14 +2,10 @@ name = "gattai-nanpure"
 compatibility_date = "2024-11-01"
 pages_build_output_dir = "."
 
-# KV は [[kv_namespaces]] で宣言する（配列リテラルではなくテーブル配列）
 [[kv_namespaces]]
 binding = "QUOTA"
-id = "e74451c9be784ff380e1039aaa03794e"
-
-[[kv_namespaces]]
-binding = "MY_KV"
-id = "e74451c9be784ff380e1039aaa03794e"
+id = "e74451c9be784ff380e1039aaa03794e" # 本番KVのIDに置き換え可
+# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # 任意：ローカル/プレビュー用
 
 [vars]
 DAILY_LIMIT = "20"
