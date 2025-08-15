@@ -1,15 +1,35 @@
 name = "gattai-nanpure"
 compatibility_date = "2024-11-01"
+
+# Pages プロジェクト（静的ファイルのルート）
 pages_build_output_dir = "."
 
+# ==== KV バインド ====
+# QUOTA: 日次レート制限で使う KV。必要分だけ定義してください。
 [[kv_namespaces]]
 binding = "QUOTA"
-id = "e74451c9be784ff380e1039aaa03794e"
-# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # ローカル用を分けるなら
+id = "e74451c9be784ff380e1039aaa03794e"   # ←本番KVのIDに置き換え
+# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"   # ←開発/プレビュー用（任意）
 
+# ==== 環境変数（共通） ====
 [vars]
+# 生成・レート制限関連
 DAILY_LIMIT = "20"
 DAILY_LIMIT_WITH_AD = "100"
 GEN_TIMEOUT_MS = "3500"
 MAX_BOARDS = "40"
 GEN_RETRY = "3"
+
+# 開発中は quota を無効化したい場合は "1"
+# 本番では "0" を推奨
+DISABLE_QUOTA = "0"
+
+# ==== preview 環境の上書き（任意。ローカル/プレビューだけ quota 無効化）====
+[env.preview.vars]
+DISABLE_QUOTA = "1"
+
+# ==== （任意）WASM を使う場合 ====
+# solver.wasm を functions/lib/solver.wasm に置いたときの例。
+# 使用しないなら丸ごと削除してOK。
+# [wasm_modules]
+# SOLVER = "functions/lib/solver.wasm"
