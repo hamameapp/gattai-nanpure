@@ -2,10 +2,14 @@ name = "gattai-nanpure"
 compatibility_date = "2024-11-01"
 pages_build_output_dir = "."
 
-kv_namespaces = [
-  { binding = "QUOTA", id = "e74451c9be784ff380e1039aaa03794e" },
-  { binding = "MY_KV", id = "e74451c9be784ff380e1039aaa03794e" }
-]
+# KV は [[kv_namespaces]] で宣言する（配列リテラルではなくテーブル配列）
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "e74451c9be784ff380e1039aaa03794e"
+
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "e74451c9be784ff380e1039aaa03794e"
 
 [vars]
 DAILY_LIMIT = "20"
