@@ -1,16 +1,13 @@
 // functions/api/generate.js
-// 速い合体ナンプレ生成API：
-// - グローバルな「完成パターン」を作り、各盤はその9x9ウィンドウとして切り出す。
-// - これにより重なりセルは必ず同じ数字になる（合体ルール厳守）。
-// - その後、各盤でヒントを削る。重なりセルの与え/非与えは最後に整合させる。
-// - バックトラック不要なので Cloudflare の CPU 制限（1102）を回避できます。
+// 速い合体ナンプレ生成API（CPU軽量）+ 柔軟なクォータ制御
+// - グローバル完成パターンから各盤を 9x9 ウィンドウ切り出し → 重なりセルは必ず同じ数字
+// - その後に各盤でヒント削り＆共有マスの与え整合
+// - KVベースのレート制限は DISABLE_QUOTA で無効化可。adShown で上限切替
 
 const GRID = 9;
-// ★フロントの 1マスpx と同じにしてください（あなたの script.js は CELL=30）
-const CELL_PX = 30;
+const CELL_PX = 30; // ★script.js の CELL と合わせる
 
-const HINT_TARGET = 36;           // 1盤あたりの目標ヒント数（大きいほど易しい）
-const MAX_TRIES_PER_BOARD = 1;    // 今回はバックトラックを使わないので未使用（将来用）
+const HINT_TARGET = 36;
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -18,17 +15,30 @@ const json = (data, status = 200) =>
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
-async function checkQuota(env, ip) {
+// ---------- クォータ ----------
+async function checkQuota(env, { ip, adShown }) {
+  // 無効化フラグ
+  if (env.DISABLE_QUOTA === "1") return true;
+
+  // バインドが無ければチェックしない
   if (!env.QUOTA) return true;
-  const key = `quota:${new Date().toISOString().slice(0, 10)}:${ip}`;
+
+  // 上限（広告表示なら緩める）
+  const base = parseInt(env.DAILY_LIMIT || "20", 10);
+  const withAd = parseInt(env.DAILY_LIMIT_WITH_AD || String(base), 10);
+  const LIMIT = adShown ? withAd : base;
+
+  const day = new Date().toISOString().slice(0, 10); // UTC日
+  const key = `quota:${day}:${ip}`;
+
   const used = parseInt((await env.QUOTA.get(key)) || "0", 10);
-  const DAILY_LIMIT = parseInt(env.DAILY_LIMIT || "20", 10);
-  if (used >= DAILY_LIMIT) return false;
+  if (used >= LIMIT) return false;
+
   await env.QUOTA.put(key, String(used + 1), { expirationTtl: 60 * 60 * 26 });
   return true;
 }
 
-// ---------- 乱択ユーティリティ ----------
+// ---------- 乱択 ----------
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0;
@@ -37,9 +47,8 @@ function shuffle(a) {
   return a;
 }
 
-// ---------- 9x9完成パターン（任意の 9x9 ウィンドウも完成盤になる） ----------
+// ---------- グローバル完成パターン ----------
 function makeGlobalPattern() {
-  // 行/列の順序：バンド（3行/3列単位）をシャッフル→各バンド内の3行/3列もシャッフル
   function makeOrder() {
     const bandOrder = shuffle([0, 1, 2]);
     const order = [];
@@ -47,28 +56,23 @@ function makeGlobalPattern() {
       const inner = shuffle([0, 1, 2]);
       for (const k of inner) order.push(b * 3 + k);
     }
-    return order; // 0..8 の並び替え
+    return order;
   }
-
   const rowOrder = makeOrder();
   const colOrder = makeOrder();
-  const digitPerm = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9]); // 数字置換
-
-  // ベースパターン（0..8 を返す）
+  const digitPerm = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const base = (r, c) => (r * 3 + Math.floor(r / 3) + c) % 9;
 
-  // 任意のグローバル座標 (R,C) に対して 1..9 を返す
   function valueAt(R, C) {
     const r = rowOrder[((R % 9) + 9) % 9];
     const c = colOrder[((C % 9) + 9) % 9];
-    const v0 = base(r, c); // 0..8
-    return digitPerm[v0];  // 1..9
+    const v0 = base(r, c);
+    return digitPerm[v0];
   }
-
   return { valueAt };
 }
 
-// ---------- ヒント削り（対称） ----------
+// ---------- ヒント削り ----------
 function carveBoard(solved, hintTarget = HINT_TARGET) {
   const g = solved.map((r) => r.slice());
   const cells = [...Array(81).keys()];
@@ -79,24 +83,22 @@ function carveBoard(solved, hintTarget = HINT_TARGET) {
     const r = (idx / 9) | 0, c = idx % 9;
     const or = 8 - r, oc = 8 - c;
     if (g[r][c] === 0 && g[or][oc] === 0) continue;
-    g[r][c] = 0;
-    g[or][oc] = 0;
+    g[r][c] = 0; g[or][oc] = 0;
     toRemove -= (r === or && c === oc) ? 1 : 2;
   }
   return g;
 }
 
-// ---------- レイアウト処理 ----------
+// ---------- レイアウト & オーバーラップ ----------
 function normalizeLayout(layout) {
   return layout.map((o) => ({
     id: String(o.id),
-    ox: Math.round((o.x || 0) / CELL_PX), // マス単位に正規化
+    ox: Math.round((o.x || 0) / CELL_PX),
     oy: Math.round((o.y || 0) / CELL_PX),
-    rawx: o.x || 0, // 応答用（フロントの位置を透過）
+    rawx: o.x || 0,
     rawy: o.y || 0,
   }));
 }
-
 function buildOverlaps(nlayout) {
   const n = nlayout.length;
   const overlaps = Array.from({ length: n }, () => []);
@@ -126,7 +128,6 @@ function buildOverlaps(nlayout) {
   }
   return overlaps;
 }
-
 function unifyGivenCells(puzzles, overlaps) {
   for (let i = 0; i < overlaps.length; i++) {
     for (const e of overlaps[i]) {
@@ -144,27 +145,28 @@ function unifyGivenCells(puzzles, overlaps) {
 // ---------- メイン ----------
 export const onRequestPost = async ({ request, env }) => {
   const ip = request.headers.get("CF-Connecting-IP") || "0.0.0.0";
-  if (!(await checkQuota(env, ip))) {
-    return json({ ok: false, reason: "daily limit exceeded" }, 429);
-  }
 
   let body = {};
   try { body = await request.json(); } catch {}
   const layout = Array.isArray(body.layout) ? body.layout : [];
+  const adShown = !!body.adShown; // フロントから渡せます
+
   if (layout.length === 0) return json({ ok: false, reason: "layout required" }, 400);
+
+  // クォータチェック
+  if (!(await checkQuota(env, { ip, adShown }))) {
+    return json({ ok: false, reason: "daily limit exceeded" }, 429);
+  }
 
   const maxBoards = parseInt(env.MAX_BOARDS || "40", 10);
   if (layout.length > maxBoards) {
     return json({ ok: false, reason: `too many boards (>${maxBoards})` }, 400);
   }
 
-  // レイアウト正規化（マス座標）
   const nlayout = normalizeLayout(layout);
-
-  // グローバル完成パターンを1つだけ作る（全盤共通）
   const pattern = makeGlobalPattern();
 
-  // 各盤の完成盤を切り出し
+  // 完成盤の切り出し
   const solved = nlayout.map(({ ox, oy }) => {
     const g = Array.from({ length: GRID }, (_, r) =>
       Array.from({ length: GRID }, (_, c) => pattern.valueAt(oy + r, ox + c))
@@ -172,20 +174,19 @@ export const onRequestPost = async ({ request, env }) => {
     return g;
   });
 
-  // 各盤でヒントを削る（個別）
+  // 問題化
   let puzzles = solved.map((g) => carveBoard(g, HINT_TARGET));
 
-  // 共有マスの与え整合（片側だけ与え → もう片側にも与える）
+  // 共有マスの与え整合
   const overlaps = buildOverlaps(nlayout);
   unifyGivenCells(puzzles, overlaps);
 
-  // レスポンス整形（IDと元のピクセル座標を透過）
+  // 応答
   const boards = nlayout.map((o, idx) => ({
     id: layout[idx].id,
     x: o.rawx,
     y: o.rawy,
     grid: puzzles[idx],
   }));
-
   return json({ ok: true, puzzle: { boards } });
 };
