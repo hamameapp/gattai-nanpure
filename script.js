@@ -3,8 +3,10 @@
 // ・盤面追加は「いま見ている中心」に生成
 // ・Yは3セル単位でスナップ（箱崩れ防止）
 // ・ローカル生成（安全バリデーション）/ サーバ連携（オプション）
-// ・矛盾チェック（行/列/箱/共有）と唯一性チェック
-// ・★新規：生成前に「レイアウト自己矛盾」検出（循環で同一盤の同一行/列/箱に同一セルを強制する場合）
+// ・矛盾チェック（行/列/箱/共有）
+// ・★唯一性チェック：削除
+// ・★エクスポート：画像(PNG)／テキスト(JSON)
+// ・レイアウト自己矛盾の検出（循環で同一盤の同一行/列/箱に同一クラスが複数出現）
 // ・すべて削除ボタン
 // ・保存キー: v4
 
@@ -21,12 +23,12 @@
     const clearAllBoardsButton = byId('clearAllBoardsButton');
     const generateProblemButton = byId('generateProblemButton');
     const checkButton = byId('checkButton');     // 矛盾チェック
-    const uniqueButton = byId('uniqueButton');   // 一意解チェック
     const solveButton = byId('solveButton');
     const exportTextButton = byId('exportTextButton');
+    const exportImageButton = byId('exportImageButton');
     const difficultySel = document.getElementById('difficulty');
 
-    // ズームUI
+    // ズームUI（ボタンは任意。無ければ無視される）
     const zoomOutBtn = byId('zoomOut');
     const zoomInBtn = byId('zoomIn');
     const zoomFitBtn = byId('zoomFit');
@@ -63,6 +65,7 @@
     const cloneGrid = g=>g.map(r=>r.slice());
     function nextId(){ let m=0; for(const s of squares) m=Math.max(m, +s.id||0); return String(m+1); }
 
+    // 新規盤を「画面中心」に生成
     function newSquareAtWorldCenter(){
       const rect = canvas.getBoundingClientRect();
       const cx = rect.width / 2, cy = rect.height / 2;
@@ -81,8 +84,8 @@
       deleteButton && (deleteButton.disabled = activeSquareId == null);
       clearAllBoardsButton && (clearAllBoardsButton.disabled = squares.length === 0);
       checkButton && (checkButton.disabled = squares.length === 0 || !isProblemGenerated || showSolution);
-      uniqueButton && (uniqueButton.disabled = squares.length === 0 || !isProblemGenerated);
-      exportTextButton && (exportTextButton.disabled = squares.length === 0);
+      exportTextButton && (exportTextButton.disabled = squares.length === 0 || !isProblemGenerated);
+      exportImageButton && (exportImageButton.disabled = squares.length === 0 || !isProblemGenerated);
       if (solveButton) { solveButton.disabled = !isProblemGenerated; solveButton.textContent = showSolution ? '解答を隠す' : '解答を表示'; }
     }
 
@@ -121,9 +124,9 @@
     zoomOutBtn?.addEventListener('click',()=>setZoom(zoom-ZOOM_STEP));
     zoomInBtn?.addEventListener('click',()=>setZoom(zoom+ZOOM_STEP));
     zoom100Btn?.addEventListener('click',()=>setZoom(1));
-    zoomFitBtn?.addEventListener('click',fitZoom);
+    zoomFitBtn?.addEventListener('click',()=>fitZoom());
 
-    // ホイール操作
+    // ホイール操作：Ctrl/⌘ + ホイールでズーム、修飾なしはパン（Shiftで横パン優先）
     canvas.addEventListener('wheel', (e)=>{
       const rect=canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey){
@@ -137,12 +140,12 @@
       }
     }, { passive:false });
 
-    // ショートカット：F=Fit、+=拡大、-=縮小、U=唯一性チェック
+    // ショートカット：F=Fit、+=拡大、-=縮小
     window.addEventListener('keydown',(e)=>{
       if (e.code==='KeyF'){ e.preventDefault(); fitZoom(); }
       if (e.key==='+' || e.key==='='){ e.preventDefault(); setZoom(zoom+ZOOM_STEP); }
       if (e.key==='-' || e.key==='_'){ e.preventDefault(); setZoom(zoom-ZOOM_STEP); }
-      if (e.key.toLowerCase()==='u'){ e.preventDefault(); handleUniqueCheck(); }
+      if (e.key.toLowerCase()==='c'){ e.preventDefault(); checkAllAndReport(); }
     });
 
     // ===== 描画 =====
@@ -253,7 +256,9 @@
 
     generateProblemButton?.addEventListener('click', handleGenerateProblem);
     checkButton?.addEventListener('click', checkAllAndReport);
-    uniqueButton?.addEventListener('click', handleUniqueCheck);
+    exportTextButton?.addEventListener('click', exportAsTextJSON);
+    exportImageButton?.addEventListener('click', exportAsPNG);
+
     solveButton?.addEventListener('click', ()=>{
       if (!isProblemGenerated) return;
       const missing = squares.some(s=>!s.solutionData || s.solutionData.length!==9);
@@ -273,18 +278,12 @@
       }
       updateButtonStates(); draw(); saveState();
     });
-    exportTextButton?.addEventListener('click', ()=>{
-      const data={ layout:squares.map(s=>({id:s.id,x:s.x,y:s.y})),
-        boards:squares.map(s=>({id:s.id,problem:s.problemData,user:s.userData,solution:s.solutionData})) };
-      const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob);
-      const a=document.createElement('a'); a.href=url; a.download='gattai_export.json'; a.click(); URL.revokeObjectURL(url);
-    });
 
     // ===== 生成（ローカル優先）=====
     async function handleGenerateProblem(){
       if (squares.length===0){ alert('まず「盤面を追加」してください'); return; }
 
-      // ★生成前：レイアウト自己矛盾チェック
+      // 生成前：レイアウト自己矛盾チェック
       const layoutIssue = detectImpossibleLayout();
       if (!layoutIssue.ok){
         alert(`このレイアウトでは生成できません：\n${layoutIssue.reason}`);
@@ -411,38 +410,87 @@
       const total=countConflicts(); setStatus(`矛盾チェック：${total} 件${total===0?'（OK）':''}`); return total;
     }
 
-    // ===== 唯一性チェック（0=解なし,1=唯一,2=複数, -1=未判定）=====
-    async function handleUniqueCheck(){
-      if (!isProblemGenerated) return;
+    // ===== エクスポート =====
+    // 画像（白背景・与えのみ・現在のレイアウトをそのまま）
+    function exportAsPNG(){
+      if (!isProblemGenerated){ alert('まず問題を生成してください'); return; }
+      const {minX,minY,maxX,maxY}=contentBounds();
+      const margin=20;
+      const outW = (maxX-minX) + margin*2;
+      const outH = (maxY-minY) + margin*2;
 
-      // 先にレイアウト自己矛盾がないかを表示
-      const layoutIssue = detectImpossibleLayout();
-      if (!layoutIssue.ok){
-        setStatus(`レイアウトが自己矛盾：${layoutIssue.reason}`);
-        alert(`唯一性チェックの前に修正してください：\n${layoutIssue.reason}`);
-        return;
+      const pr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const off = document.createElement('canvas');
+      off.width = Math.floor(outW * pr);
+      off.height = Math.floor(outH * pr);
+      const g = off.getContext('2d', { alpha:false });
+      g.setTransform(pr,0,0,pr,0,0);
+      g.fillStyle = '#fff';
+      g.fillRect(0,0,off.width,off.height);
+
+      // 描画（与えのみ）
+      g.font = FONT;
+      g.textAlign='center'; g.textBaseline='middle';
+      for (const s of squares){
+        const ox = margin + (s.x - minX), oy = margin + (s.y - minY);
+        // 枠
+        g.strokeStyle='#222'; g.lineWidth=1.5; g.strokeRect(ox-.5,oy-.5,s.w+1,s.h+1);
+        // 細線
+        g.lineWidth=1; g.strokeStyle='#aaa';
+        for (let i=1;i<GRID;i++){
+          const gx=ox+i*CELL, gy=oy+i*CELL;
+          g.beginPath(); g.moveTo(gx+.5,oy); g.lineTo(gx+.5,oy+s.h); g.stroke();
+          g.beginPath(); g.moveTo(ox,gy+.5); g.lineTo(ox+s.w,gy+.5); g.stroke();
+        }
+        // 太線
+        g.lineWidth=2; g.strokeStyle='#333';
+        for (let i=0;i<=GRID;i+=3){
+          const gx=ox+i*CELL+.5, gy=oy+i*CELL+.5;
+          g.beginPath(); g.moveTo(gx,oy); g.lineTo(gx,oy+s.h); g.stroke();
+          g.beginPath(); g.moveTo(ox,gy); g.lineTo(ox+s.w,gy); g.stroke();
+        }
+        // 与え
+        for (let r=0;r<GRID;r++) for (let c=0;c<GRID;c++){
+          const v=s.problemData[r][c]|0; if (!v) continue;
+          const px=ox+c*CELL+CELL/2, py=oy+r*CELL+CELL/2;
+          g.fillStyle='#000'; g.fillText(String(v),px,py);
+        }
       }
 
-      uniqueButton && (uniqueButton.disabled = true);
-      setStatus('唯一性チェック中…（解が2つ見つかったら打ち切ります）');
-      await new Promise(r=>requestAnimationFrame(r));
-      try{
-        const result = checkUniquenessCombined();
-        if (result === -1) setStatus('計算量が大きすぎて判定できませんでした（盤面数を減らすか配置を調整してください）');
-        else if (result === 0) setStatus('解が存在しません（与えに矛盾）');
-        else if (result === 1) setStatus('一意解です（唯一解）');
-        else if (result === 2) setStatus('複数解があります（少なくとも2解）');
-        else setStatus('判定できませんでした');
-      }catch(e){
-        console.error(e); alert('唯一性チェック中にエラーが発生しました');
-        setStatus('唯一性チェックに失敗しました');
-      }finally{
-        uniqueButton && (uniqueButton.disabled = false);
-      }
+      const url = off.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'gattai_puzzle.png';
+      a.click();
     }
 
-    // === レイアウト自己矛盾の検出 ===
-    // 同一の等価クラス（共有セル）が、同一盤の「同じ行/列/ブロック」に2箇所以上現れると Sudoku 的に不可能。
+    // テキスト（JSON）— 後で“複数解の有無チェック”に使いやすい構造
+    function exportAsTextJSON(){
+      if (!isProblemGenerated){ alert('まず問題を生成してください'); return; }
+      const norm = normalizeLayoutFront(squares); // ox,oy（セル座標）
+      const byId = new Map(norm.map(o=>[String(o.id), o]));
+      const data = {
+        version: 1,
+        grid: 9,
+        cell: CELL,
+        // レイアウトは両方（ピクセル/セル）を書き出す
+        layout_pixels: squares.map(s=>({ id:s.id, x:s.x, y:s.y })),
+        layout_cells: norm, // {id, ox, oy(3の倍数)}
+        boards: squares.map(s=>({
+          id: s.id,
+          ox: byId.get(String(s.id)).ox,
+          oy: byId.get(String(s.id)).oy,
+          givens: s.problemData // 0=空
+        }))
+      };
+      const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='gattai_puzzle.json'; a.click();
+      URL.revokeObjectURL(url);
+      setStatus('テキスト（JSON）を書き出しました');
+    }
+
+    // ===== レイアウト自己矛盾の検出 =====
     function detectImpossibleLayout(){
       if (squares.length===0) return { ok:true };
       const overlaps = buildOverlapsClient(squares);
@@ -465,7 +513,6 @@
           if (!rows[key]) rows[key]=new Set();
           if (!cols[key]) cols[key]=new Set();
           if (!boxes[key]) boxes[key]=new Set();
-          // 同一クラスが同一盤の同じ行/列/箱に2回以上出たら不可能
           if (rows[key].has(r)) return { ok:false, reason:`同一セルの共有が同一盤の同じ行に重複しています（盤#${b+1} 行${r+1}）` };
           if (cols[key].has(c)) return { ok:false, reason:`同一セルの共有が同一盤の同じ列に重複しています（盤#${b+1} 列${c+1}）` };
           if (boxes[key].has(bi)) return { ok:false, reason:`同一セルの共有が同一盤の同じブロックに重複しています（盤#${b+1} ブロック${bi+1}）` };
@@ -473,104 +520,6 @@
         }
       }
       return { ok:true };
-    }
-
-    // === 唯一性チェック本体（0=解なし,1=唯一,2=複数, -1=未判定）===
-    function checkUniquenessCombined(){
-      if (squares.length === 0) return -1;
-
-      const overlaps = buildOverlapsClient(squares);
-      const idOf = (b,r,c)=> b*81 + r*9 + c;
-      const N = squares.length * 81;
-      const parent = new Int32Array(N); for (let i=0;i<N;i++) parent[i]=i;
-      const find=(x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
-      const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) parent[b]=a; };
-      for (const {i,j,cells} of overlaps){ for (const {r,c,r2,c2} of cells){ unite(idOf(i,r,c), idOf(j,r2,c2)); } }
-
-      const groups = Object.create(null);
-      for (let b=0;b<squares.length;b++){
-        for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-          const root=find(idOf(b,r,c));
-          (groups[root] ??= []).push({b,r,c});
-        }
-      }
-      const vars = Object.values(groups);
-
-      const ROW = Array.from({length:squares.length}, ()=> new Uint16Array(9));
-      const COL = Array.from({length:squares.length}, ()=> new Uint16Array(9));
-      const BOX = Array.from({length:squares.length}, ()=> new Uint16Array(9));
-      const BIT = d => 1<<d; const ALL = 0x3FE;
-
-      // 与え反映
-      const fixedVal = new Map();
-      for (let vi=0; vi<vars.length; vi++){
-        const occs = vars[vi];
-        if (!Array.isArray(occs) || occs.length===0) continue;
-        let forced = 0;
-        for (const {b,r,c} of occs){
-          const giv = squares[b].problemData[r][c]|0;
-          if (giv>0){
-            if (forced===0) forced=giv; else if (forced!==giv) return 0; // 共有セルの与え矛盾
-          }
-        }
-        if (forced>0){
-          fixedVal.set(vi, forced);
-          const bit=BIT(forced);
-          for (const {b,r,c} of occs){
-            const bi=Math.floor(r/3)*3 + Math.floor(c/3);
-            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit) return 0; // 盤内衝突
-            ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit;
-          }
-        }
-      }
-
-      const order=[]; for (let i=0;i<vars.length;i++) if(!fixedVal.has(i)) order.push(i);
-
-      function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
-      function ctz(x){ if (x===0) return 0; let n=0; while(((x>>>n)&1)===0) n++; return n; }
-      function domainMaskOfVar(varIdx){
-        const occs = vars[varIdx];
-        if (!Array.isArray(occs)) return 0;
-        let mask = ALL;
-        for (const {b,r,c} of occs){
-          const bi=Math.floor(r/3)*3 + Math.floor(c/3);
-          const forbid = ROW[b][r] | COL[b][c] | BOX[b][bi];
-          mask &= (ALL ^ forbid);
-          if (mask===0) break;
-        }
-        return mask;
-      }
-      order.sort((a,b)=>popcnt(domainMaskOfVar(a)) - popcnt(domainMaskOfVar(b)));
-
-      let solutions=0, nodes=0;
-      const LIMIT_NODES = Math.max(100000, 100000 + order.length * 300);
-      let limitHit = false;
-
-      (function dfs(k){
-        if (solutions>=2 || limitHit) return;
-        if (nodes++ > LIMIT_NODES){ limitHit = true; return; }
-        if (k===order.length){ solutions++; return; }
-
-        const vi=order[k];
-        let mask=domainMaskOfVar(vi);
-        if (!mask) return;
-
-        while(mask){
-          const v=ctz(mask); mask&=mask-1; const bit=1<<v;
-          const occs=vars[vi]; if (!Array.isArray(occs)) return;
-          let ok=true; const touched=[];
-          for (const {b,r,c} of occs){
-            const bi=Math.floor(r/3)*3 + Math.floor(c/3);
-            if (ROW[b][r]&bit || COL[b][c]&bit || BOX[b][bi]&bit){ ok=false; break; }
-            ROW[b][r]|=bit; COL[b][c]|=bit; BOX[b][bi]|=bit; touched.push({b,r,c,bi});
-          }
-          if (ok) dfs(k+1);
-          for (const {b,r,c,bi} of touched){ ROW[b][r]&=~bit; COL[b][c]&=~bit; BOX[b][bi]&=~bit; }
-          if (solutions>=2 || limitHit) return;
-        }
-      })();
-
-      return limitHit ? -1 : Math.min(solutions,2);
     }
 
     // ===== 保存/復元/初期化 =====
