@@ -3,10 +3,6 @@ compatibility_date = "2024-11-01"
 pages_build_output_dir = "."
 
 # Workers KV のバインド設定
-kv_namespaces = [
-  # id は Cloudflare ダッシュボードでNamespace作成後に置き換える
-  { binding = "QUOTA", id = "" }
-]
 
 [vars]
 # 1日あたりの無料生成回数（広告未表示）
