@@ -1,10 +1,5 @@
 // functions/api/generate.js
-// 高速合体ナンプレ + 解答返却 + 共有マスを「解答値」で強制整合
-//
-// ・1つの“無限”完成パターンから各盤の 9x9 を切り出し（共有セルは必ず同じ数字）
-// ・各盤でヒントを削る
-// ・最後に、共有マスに関して puzzle の与えを「解答値」で上書き（矛盾が出ない）
-// ・解答（solution）も返す
+// 高速合体ナンプレ + 解答返却 + パズル整合(0 か solution と一致) + 妥当性検証
 
 const GRID = 9;
 const CELL_PX = 30; // ★script.js の CELL と一致
@@ -41,7 +36,7 @@ function makeGlobalPattern() {
     const bandOrder = shuffle([0,1,2]);
     const order = [];
     for (const b of bandOrder) { const inner = shuffle([0,1,2]); for (const k of inner) order.push(b*3+k); }
-    return order;
+    return order; // 0..8
   }
   const rowOrder = makeOrder(), colOrder = makeOrder(), digitPerm = shuffle([1,2,3,4,5,6,7,8,9]);
   const base = (r,c)=> (r*3 + Math.floor(r/3) + c) % 9;
@@ -96,6 +91,27 @@ function buildOverlaps(nlayout){
   return overlaps;
 }
 
+// ---- 妥当性チェック ----
+function isValidSolved(grid){
+  // 各行/列/ブロックが 1..9 を1回ずつ含むか
+  const okSet = '123456789';
+  const row = (r)=> grid[r].join('');
+  const col = (c)=> grid.map(r=>r[c]).join('');
+  const box = (br,bc)=>{
+    const arr=[]; for (let dr=0;dr<3;dr++) for (let dc=0;dc<3;dc++) arr.push(grid[br+dr][bc+dc]);
+    return arr.join('');
+  };
+  const sorted = s => s.split('').sort().join('');
+  for (let i=0;i<9;i++){
+    if (sorted(row(i))!==okSet) return false;
+    if (sorted(col(i))!==okSet) return false;
+  }
+  for (let br=0;br<9;br+=3) for (let bc=0;bc<9;bc+=3){
+    if (sorted(box(br,bc))!==okSet) return false;
+  }
+  return true;
+}
+
 // 片側だけ与え→もう片側へコピー
 function unifyGivenCells(puzzles, overlaps){
   for (let i=0;i<overlaps.length;i++){
@@ -110,19 +126,28 @@ function unifyGivenCells(puzzles, overlaps){
   }
 }
 
-// ★両側が与えだが不一致 → 解答値で両側を上書き（矛盾排除）
+// ★共有マスの与えは「解答値」で統一（両側与え不一致も解消）
 function enforceOverlapBySolution(puzzles, solved, overlaps){
   for (let i=0;i<overlaps.length;i++){
     for (const e of overlaps[i]){
       const j=e.j;
       for (const {r,c,r2,c2} of e.cells){
-        const sVal = solved[i][r][c]; // グローバルパターン由来なので solved[j][r2][c2] と一致する
+        const sVal = solved[i][r][c]; // solved[j][r2][c2] も同じ
         if (puzzles[i][r][c]!==0 || puzzles[j][r2][c2]!==0) {
           puzzles[i][r][c] = sVal;
           puzzles[j][r2][c2] = sVal;
         }
       }
     }
+  }
+}
+
+// ★与えは必ず 0 か solution と一致（単盤でも保証）
+function clampPuzzleToSolution(puzzle, solution){
+  for (let r=0;r<9;r++) for (let c=0;c<9;c++){
+    const v = puzzle[r][c] | 0;
+    if (v === 0) continue;
+    puzzle[r][c] = solution[r][c]; // 万一違っていても解答値に合わせる
   }
 }
 
@@ -151,23 +176,32 @@ export const onRequestPost = async ({ request, env }) => {
     )
   );
 
+  // 妥当性チェック（念のため）
+  for (const g of solved) {
+    if (!isValidSolved(g)) {
+      // まれにでも失敗したら再生成（実際は起こらない想定）
+      return json({ ok:false, reason:"internal: invalid solution pattern" }, 500);
+    }
+  }
+
   const hintTarget = HINT_BY_DIFF[difficulty] ?? HINT_BY_DIFF.normal;
 
   // 問題化
   let puzzles = solved.map(g => carveBoard(g, hintTarget));
 
-  // 共有マス整合：片側与え→コピー
+  // 共有マス整合 → 与えを解答値で統一
   const overlaps = buildOverlaps(nlayout);
   unifyGivenCells(puzzles, overlaps);
-
-  // 共有マスが両側与えで不一致のケースを "解答値" で強制一致
   enforceOverlapBySolution(puzzles, solved, overlaps);
+
+  // 各盤の与えを最終整合（単盤でも 0 か solution）
+  for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
 
   // 応答
   const boards = nlayout.map((o, idx) => ({
     id: layout[idx].id, x: o.rawx, y: o.rawy,
-    grid: puzzles[idx],
-    solution: solved[idx]
+    grid: puzzles[idx],         // 与え（0 or solution）
+    solution: solved[idx]       // 完成盤
   }));
   return json({ ok:true, puzzle:{ boards } });
 };
