@@ -26,7 +26,6 @@
     button:disabled{background-color:#cbd5e1;cursor:not-allowed;transform:none;box-shadow:none}
     #status-container{text-align:center;min-height:2.5rem;display:flex;flex-direction:column;justify-content:center;align-items:center}
     #status{font-weight:600;color:#475569;min-height:1.5rem}
-    #cancelGenerationButton{margin-top:.5rem}
     select{border:1px solid #cbd5e1;border-radius:8px;padding:.5rem .75rem;font-weight:600}
     .zoombar button{padding:.35rem .6rem}
   </style>
@@ -42,13 +41,13 @@
         <div class="flex flex-wrap justify-center items-center gap-3">
           <button id="addSquareButton">盤面を追加</button>
           <button id="deleteButton" class="danger" disabled>選択中の盤面を削除</button>
+          <button id="clearAllBoardsButton" class="danger" disabled>すべてクリア</button>
           <button id="generateProblemButton" class="secondary">合体問題を作成</button>
           <select id="difficulty" class="ml-2">
             <option value="easy">やさしい</option>
             <option value="normal" selected>ふつう</option>
             <option value="hard">むずかしい</option>
           </select>
-          <button id="editLayoutButton" class="info" style="display:none;">レイアウトを編集</button>
         </div>
       </div>
 
@@ -58,7 +57,6 @@
         <div class="flex flex-wrap justify-center gap-3">
           <button id="checkButton" class="tertiary" disabled>答え合わせ</button>
           <button id="solveButton" class="tertiary" disabled>解答を表示</button>
-          <button id="clearUserInputButton" class="danger" disabled>入力クリア</button>
           <button id="exportTextButton" class="info" disabled>テキスト出力</button>
         </div>
       </div>
@@ -73,9 +71,7 @@
         <button id="zoom100" class="info">100%</button>
         <button id="zoomFit" class="secondary">フィット</button>
       </div>
-      <div id="status-container">
-        <div id="status">問題のレイアウトを決めて「合体問題を作成」ボタンを押してください。</div>
-      </div>
+      <div id="status-container"><div id="status">問題のレイアウトを決めて「合体問題を作成」ボタンを押してください。</div></div>
     </div>
 
     <canvas id="canvas"></canvas>
