@@ -2,7 +2,7 @@
 // ・合体生成（ローカル/サーバ）
 // ・Yは3セル単位でスナップ（箱崩れ防止）
 // ・ローカル生成/チェックも正規化oy(3の倍数)を使用
-// ・解答トグル、チェック、ズーム、「すべてクリア」
+// ・解答トグル、チェック（件数表示・自動チェック）、ズーム、「すべてクリア」
 // ・保存キー: v4
 
 (() => {
@@ -32,8 +32,8 @@
     const GRID = 9;
     const CELL = 30;
     const BOARD_PIX = GRID * CELL;
-    const SNAP_X = CELL;       // ← Xは1セル単位
-    const SNAP_Y = CELL * 3;   // ← ★Yは3セル単位（ここが重要）
+    const SNAP_X = CELL;       // Xは1セル
+    const SNAP_Y = CELL * 3;   // ★Yは3セル（箱崩れ防止）
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
     const MIN_ZOOM = 0.5, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
@@ -57,9 +57,8 @@
     function nextId() { let m=0; for (const s of squares) m=Math.max(m, +s.id||0); return String(m+1); }
     function newSquare(x, y) {
       const id = nextId();
-      // 初期配置も3セル単位に揃える
       const nx = snap(x, SNAP_X);
-      const ny = snap(y, SNAP_Y);
+      const ny = snap(y, SNAP_Y); // 初期配置から3セル整列
       return { id, x:nx, y:ny, w: BOARD_PIX, h: BOARD_PIX,
         problemData:createEmptyGrid(), userData:createEmptyGrid(),
         checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
@@ -70,7 +69,8 @@
       generateProblemButton && (generateProblemButton.disabled = squares.length === 0);
       deleteButton && (deleteButton.disabled = activeSquareId == null);
       clearAllBoardsButton && (clearAllBoardsButton.disabled = squares.length === 0);
-      checkButton && (checkButton.disabled = !isProblemGenerated || showSolution);
+      // ★生成後は常にチェック可能に（解答表示中でも押せる）
+      checkButton && (checkButton.disabled = squares.length === 0 || !isProblemGenerated);
       exportTextButton && (exportTextButton.disabled = squares.length === 0);
       if (solveButton) { solveButton.disabled = !isProblemGenerated; solveButton.textContent = showSolution ? '解答を隠す' : '解答を表示'; }
     }
@@ -124,7 +124,6 @@
       for (let i=0;i<=GRID;i+=3){
         const gx=s.x+i*CELL+.5, gy=s.y+i*CELL+.5;
         ctx.beginPath(); ctx.moveTo(gx,s.y); ctx.lineTo(gx,s.y+s.h); ctx.stroke();
-        ctx.beginPath(); ctx.MoveTo; // no-op safety (ignored)
         ctx.beginPath(); ctx.moveTo(s.x,gy); ctx.lineTo(s.x+s.w,gy); ctx.stroke();
       }
       ctx.font = FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -132,7 +131,7 @@
         const px=s.x+c*CELL+CELL/2, py=s.y+r*CELL+CELL/2;
         const giv=s.problemData[r][c]|0, usr=s.userData[r][c]|0;
         if (giv>0){ ctx.fillStyle='#000'; ctx.fillText(String(giv),px,py); }
-        else if (usr>0){ const bad = (!showSolution) && ((s.checkData[r][c]|0)===1);
+        else if (usr>0){ const bad = ((s.checkData[r][c]|0)===1);
           ctx.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
           ctx.fillText(String(usr),px,py);
         }
@@ -164,7 +163,7 @@
       const s=squares.find(x=>String(x.id)===String(drag.id)); if(!s) return;
       const rect=canvas.getBoundingClientRect();
       const {x:xw,y:yw}=toWorld(e.clientX-rect.left, e.clientY-rect.top);
-      let nx=snap(xw-drag.offsetX,SNAP_X), ny=snap(yw-drag.offsetY,SNAP_Y); // ★Yは3セル単位
+      let nx=snap(xw-drag.offsetX,SNAP_X), ny=snap(yw-drag.offsetY,SNAP_Y);
       nx=clamp(nx,0,(canvas.width/devicePR/zoom)-s.w);
       ny=clamp(ny,0,(canvas.height/devicePR/zoom)-s.h);
       s.x=nx; s.y=ny; draw();
@@ -172,7 +171,10 @@
     window.addEventListener('mouseup',()=>{ drag=null; saveState(); });
 
     window.addEventListener('keydown',(e)=>{
-      if (!isProblemGenerated || !activeCell || showSolution) return;
+      // C でチェック
+      if (e.key.toLowerCase() === 'c') { e.preventDefault(); checkAllAndReport(); return; }
+
+      if (!isProblemGenerated || !activeCell) return;
       const s=squares.find(x=>String(x.id)===String(activeCell.id)); if(!s) return;
       if (s.problemData[activeCell.r][activeCell.c] > 0) return;
       if (e.key>='1'&&e.key<='9'){ s.userData[activeCell.r][activeCell.c]=parseInt(e.key,10); s.checkData[activeCell.r][activeCell.c]=0; draw(); e.preventDefault(); saveState(); return; }
@@ -203,13 +205,7 @@
       setStatus('すべての盤面をクリアしました'); updateButtonStates(); draw();
     });
 
-    checkButton?.addEventListener('click', ()=>{
-      if (!isProblemGenerated || showSolution) return;
-      for (const s of squares) runCheck(s);
-      runOverlapCheck();
-      setStatus('チェック完了：赤は矛盾（行/列/ブロック/共有マス）');
-      draw();
-    });
+    checkButton?.addEventListener('click', checkAllAndReport);
 
     solveButton?.addEventListener('click', ()=>{
       if (!isProblemGenerated) return;
@@ -269,7 +265,9 @@
         }
         renderBoards(boards);
         isProblemGenerated=true;
-        setStatus(`問題を作成しました！（${boards.length}盤）`);
+        // ★生成直後に自動チェック＆件数表示
+        const cnt = checkAllAndReport();
+        setStatus(`問題を作成しました！（${boards.length}盤） / 矛盾 ${cnt} 件${cnt===0?'（OK）':''}`);
       } catch (err) {
         console.error(err);
         alert(err?.message || '生成に失敗しました');
@@ -279,6 +277,7 @@
       }
     }
 
+    // API呼び出し
     async function generateFromServer(layout, adShown=false, difficulty='normal'){
       const res = await fetch('/api/generate', {
         method:'POST',
@@ -378,6 +377,27 @@
       }
     }
 
+    // ===== チェック集計 =====
+    function countConflicts(){
+      let total = 0;
+      for (const s of squares){
+        for (let r=0;r<GRID;r++) for (let c=0;c<GRID;c++){
+          if ((s.checkData[r][c]|0) === 1) total++;
+        }
+      }
+      return total;
+    }
+    function checkAllAndReport(){
+      if (squares.length === 0 || !isProblemGenerated) return 0;
+      // 与え＋ユーザー入力でチェック
+      for (const s of squares) runCheck(s);
+      runOverlapCheck();
+      draw();
+      const total = countConflicts();
+      setStatus(`チェック完了：矛盾 ${total} 件${total===0?'（OK）':''}`);
+      return total;
+    }
+
     // ===== 保存/復元/初期化 =====
     function saveState(){
       try{
@@ -398,7 +418,7 @@
         const obj = JSON.parse(raw); if (!obj || !Array.isArray(obj.squares)) return false;
         zoom = clamp(Number(obj.zoom)||1, MIN_ZOOM, MAX_ZOOM);
         squares = obj.squares.map(o=>({
-          id:o.id, x: snap(o.x||0, SNAP_X), y: snap(o.y||0, SNAP_Y), // ★復元時も3セル整列
+          id:o.id, x: snap(o.x||0, SNAP_X), y: snap(o.y||0, SNAP_Y), // 復元時も3セル整列
           w: BOARD_PIX, h: BOARD_PIX,
           problemData:o.problemData||createEmptyGrid(),
           userData:o.userData||createEmptyGrid(),
