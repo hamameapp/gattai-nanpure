@@ -1,11 +1,17 @@
 // script.js — フロント（Cloudflare Pages）
-// ・/api/generate → 失敗時はローカル生成に自動フォールバック
+// ・合体生成（ローカル固定 / サーバ優先はフラグで切替）
 // ・解答トグル、チェック、ズーム
 // ・「すべてクリア」で localStorage も消す
 // ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
+    // ======== ここだけ切替 ========
+    // true  : サーバを使わず常にローカル生成（“何も起きない”の暫定回避）
+    // false : サーバ優先＋失敗時ローカルフォールバック
+    const USE_LOCAL_ONLY = true;
+    // ==============================
+
     // ===== DOM =====
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -20,7 +26,7 @@
     const exportTextButton = byId('exportTextButton');
     const difficultySel = document.getElementById('difficulty');
 
-    // ズーム系
+    // ズーム
     const zoomOutBtn = byId('zoomOut');
     const zoomInBtn = byId('zoomIn');
     const zoomFitBtn = byId('zoomFit');
@@ -29,7 +35,7 @@
 
     // ===== 定数 =====
     const GRID = 9;
-    const CELL = 30;  // ★サーバの CELL_PX=30 と一致
+    const CELL = 30;  // サーバ側CELL_PXと合わせる
     const BOARD_PIX = GRID * CELL;
     const SNAP = CELL;
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
@@ -47,7 +53,7 @@
     let devicePR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     let showSolution = false;
 
-    // ===== ユーティリティ =====
+    // ===== Utils =====
     function byId(id) { return document.getElementById(id) || null; }
     function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
     function snap(v, unit) { return Math.round(v / unit) * unit; }
@@ -209,7 +215,7 @@
     solveButton?.addEventListener('click', ()=>{
       if (!isProblemGenerated) return;
       const missing = squares.some(s=>!s.solutionData || s.solutionData.length!==9);
-      if (missing) { alert('解答データがありません（サーバを更新してください）'); return; }
+      if (missing) { alert('解答データがありません'); return; }
       if (!showSolution) {
         for (const s of squares) {
           s._userBackup = cloneGrid(s.userData);
@@ -236,41 +242,43 @@
       const a = document.createElement('a'); a.href=url; a.download='gattai_export.json'; a.click(); URL.revokeObjectURL(url);
     });
 
-    // ===== サーバ生成 + フォールバック =====
+    // ===== 生成（ローカル固定 or サーバ優先）=====
     async function handleGenerateProblem(){
       if (squares.length===0) { alert('まず「盤面を追加」してください'); return; }
       // 初期化
       for (const sq of squares){
-        sq.problemData=createEmptyGrid();
-        sq.userData=createEmptyGrid();
-        sq.checkData=createEmptyGrid();
-        sq.solutionData=createEmptyGrid();
-        sq._userBackup=null;
+        sq.problemData=createEmptyGrid(); sq.userData=createEmptyGrid();
+        sq.checkData=createEmptyGrid(); sq.solutionData=createEmptyGrid(); sq._userBackup=null;
       }
       showSolution=false; isProblemGenerated=false; updateButtonStates(); draw();
 
       const diff = difficultySel ? String(difficultySel.value||'normal') : 'normal';
       const layout = squares.map(s=>({ id:String(s.id), x:Math.round(s.x), y:Math.round(s.y) }));
+      generateProblemButton.disabled = true;
 
-      try{
-        generateProblemButton.disabled=true;
-        setStatus(`問題を生成しています...（難易度: ${diff}）`);
-        // 1) サーバ
+      try {
+        if (USE_LOCAL_ONLY) {
+          setStatus(`問題を生成しています...（ローカル / 難易度:${diff}）`);
+          const boards = generateLocally(layout, diff);
+          renderBoards(boards);
+          isProblemGenerated=true;
+          setStatus(`問題を作成しました！（ローカル / ${boards.length}盤）`);
+          return;
+        }
+        // サーバ優先
+        setStatus(`問題を生成しています...（難易度:${diff}）`);
         const boards = await generateFromServer(layout, /*adShown=*/false, diff);
         renderBoards(boards);
         isProblemGenerated=true;
-        setStatus(`問題を作成しました！（サーバ生成 / ${boards.length}盤）`);
-        saveState();
-      } catch(err){
+        setStatus(`問題を作成しました！（サーバ / ${boards.length}盤）`);
+      } catch (err) {
         console.warn('API失敗。ローカル生成に切替: ', err);
-        // 2) ローカル・フォールバック
         const boards = generateLocally(layout, diff);
         renderBoards(boards);
         isProblemGenerated=true;
-        setStatus(`問題を作成しました！（ローカル生成 / ${boards.length}盤）`);
-        saveState();
+        setStatus(`問題を作成しました！（ローカル切替 / ${boards.length}盤）`);
       } finally {
-        generateProblemButton.disabled=false; updateButtonStates(); draw();
+        generateProblemButton.disabled=false; updateButtonStates(); draw(); saveState();
       }
     }
 
@@ -299,11 +307,10 @@
         sq.userData = createEmptyGrid();
         sq.checkData = createEmptyGrid();
       }
-      updateButtonStates(); draw();
-      saveState();
+      updateButtonStates(); draw(); saveState();
     }
 
-    // ===== 単盤チェック =====
+    // ===== チェック =====
     function runCheck(sq){
       sq.checkData = createEmptyGrid();
       const val = (r,c)=> (sq.userData[r][c] || sq.problemData[r][c] || 0);
@@ -417,15 +424,12 @@
     else setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトは復元されました');
     updateButtonStates(); draw();
 
-    // ========= ここからローカル生成ロジック =========
-
+    // ========= ローカル生成ロジック =========
     function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
-
     function makeGlobalPattern(){
       function makeOrder(){
         const bandOrder = shuffle([0,1,2]);
-        const order=[];
-        for(const b of bandOrder){ const inner=shuffle([0,1,2]); for(const k of inner) order.push(b*3+k); }
+        const order=[]; for(const b of bandOrder){ const inner=shuffle([0,1,2]); for(const k of inner) order.push(b*3+k); }
         return order;
       }
       const rowOrder=makeOrder(), colOrder=makeOrder(), digitPerm=shuffle([1,2,3,4,5,6,7,8,9]);
@@ -436,7 +440,6 @@
       }
       return { valueAt };
     }
-
     function carveBoard(solved, hintTarget){
       const g = solved.map(r=>r.slice());
       const cells=[...Array(81).keys()]; shuffle(cells);
@@ -450,7 +453,6 @@
       }
       return g;
     }
-
     function normalizeLayout(layout){
       return layout.map(o=>({
         id:String(o.id),
@@ -508,7 +510,6 @@
         const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
       }
     }
-
     function generateLocally(layout, difficulty='normal'){
       const HINT = { easy:40, normal:36, hard:30 }[difficulty] ?? 36;
       const nlayout = normalizeLayout(layout);
@@ -529,5 +530,8 @@
       }));
     }
     // ========= ローカル生成ここまで =========
+
+    // イベント登録（最後に）
+    generateProblemButton?.addEventListener('click', handleGenerateProblem);
   });
 })();
