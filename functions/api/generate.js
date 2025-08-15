@@ -24,6 +24,7 @@ function makeGlobalPattern(){
   }
   return { valueAt };
 }
+
 function carveBoard(solved, hintTarget){
   const g = solved.map(r=>r.slice());
   const cells=[...Array(81).keys()]; shuffle(cells);
@@ -37,15 +38,22 @@ function carveBoard(solved, hintTarget){
   }
   return g;
 }
+
 function normalizeLayout(layout){
-  return layout.map(o=>({
-    id:String(o.id),
-    ox: Math.round((Number(o.x)||0)/CELL_PX),
-    oy: Math.round((Number(o.y)||0)/CELL_PX),
-    rawx: Number(o.x)||0,
-    rawy: Number(o.y)||0
-  }));
+  return layout.map(o=>{
+    const ox = Math.round((Number(o.x)||0)/CELL_PX);
+    let   oy = Math.round((Number(o.y)||0)/CELL_PX);
+    // ★重要：3の倍数に正規化（箱の崩れ防止）
+    oy -= oy % 3;
+    return {
+      id:String(o.id),
+      ox, oy,
+      rawx: Number(o.x)||0,
+      rawy: Number(o.y)||0
+    };
+  });
 }
+
 function buildOverlaps(nlayout){
   const n=nlayout.length, overlaps=Array.from({length:n},()=>[]);
   for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
@@ -64,11 +72,13 @@ function buildOverlaps(nlayout){
   }
   return overlaps;
 }
+
 function clampPuzzleToSolution(puzzle, solution){
   for(let r=0;r<9;r++) for(let c=0;c<9;c++){
     const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
   }
 }
+
 function unifyGivenCells(puzzles, overlaps){
   for (let i=0;i<overlaps.length;i++){
     for (const e of overlaps[i]){
@@ -81,6 +91,7 @@ function unifyGivenCells(puzzles, overlaps){
     }
   }
 }
+
 function enforceOverlapBySolution(puzzles, solved, overlaps){
   for (let i=0;i<overlaps.length;i++){
     for (const e of overlaps[i]){
@@ -94,15 +105,19 @@ function enforceOverlapBySolution(puzzles, solved, overlaps){
     }
   }
 }
+
 function puzzleHasContradiction(p){
+  // row
   for (let r=0;r<9;r++){
     const seen=new Set();
     for (let c=0;c<9;c++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
   }
+  // col
   for (let c=0;c<9;c++){
     const seen=new Set();
     for (let r=0;r<9;r++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
   }
+  // box
   for (let br=0;br<9;br+=3) for (let bc=0;bc<9;bc+=3){
     const seen=new Set();
     for (let dr=0;dr<3;dr++) for (let dc=0;dc<3;dc++){
@@ -123,6 +138,7 @@ export const onRequestPost = async ({ request }) => {
 
   for (let attempt=0; attempt<20; attempt++){
     const pattern = makeGlobalPattern();
+    // ★重要：R=oy+r, C=ox+c（oy は 3の倍数なので箱が壊れない）
     const solved = nlayout.map(({ ox, oy }) =>
       Array.from({ length: GRID }, (_, r) =>
         Array.from({ length: GRID }, (_, c) => pattern.valueAt(oy + r, ox + c))
@@ -130,14 +146,15 @@ export const onRequestPost = async ({ request }) => {
     );
     let puzzles = solved.map(g => carveBoard(g, hintTarget));
     const overlaps = buildOverlaps(nlayout);
+
+    // 与えの整合
     unifyGivenCells(puzzles, overlaps);
     enforceOverlapBySolution(puzzles, solved, overlaps);
     for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
 
-    // 与え矛盾チェック
+    // バリデーション（行/列/箱/共有マス）
     let bad = false;
     for (const p of puzzles) if (puzzleHasContradiction(p)) { bad = true; break; }
-    // 共有マスもチェック
     if (!bad){
       for (let i=0;i<overlaps.length;i++){
         for (const e of overlaps[i]){
