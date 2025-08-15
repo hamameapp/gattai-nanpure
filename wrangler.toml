@@ -1,0 +1,21 @@
+name = "gattai-nanpure"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "."
+
+# Workers KV のバインド設定
+kv_namespaces = [
+  # id は Cloudflare ダッシュボードでNamespace作成後に置き換える
+  { binding = "QUOTA", id = "" }
+]
+
+[vars]
+# 1日あたりの無料生成回数（広告未表示）
+DAILY_LIMIT = "20"
+# 広告表示時の上限（緩和用）
+DAILY_LIMIT_WITH_AD = "100"
+# 生成処理のタイムアウト（ミリ秒）
+GEN_TIMEOUT_MS = "3500"
+# 盤の最大数
+MAX_BOARDS = "40"
+# 失敗時の再試行回数
+GEN_RETRY = "3"
