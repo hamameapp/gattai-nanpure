@@ -4,8 +4,8 @@ pages_build_output_dir = "."
 
 [[kv_namespaces]]
 binding = "QUOTA"
-id = "e74451c9be784ff380e1039aaa03794e" # 本番KVのIDに置き換え可
-# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # 任意：ローカル/プレビュー用
+id = "e74451c9be784ff380e1039aaa03794e"
+# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # ローカル用を分けるなら
 
 [vars]
 DAILY_LIMIT = "20"
