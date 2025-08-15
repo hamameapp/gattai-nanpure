@@ -1,8 +1,8 @@
 // script.js — フロント（Cloudflare Pages）
-// ・合体生成（/api/generate）
+// ・/api/generate → 失敗時はローカル生成に自動フォールバック
 // ・解答トグル、チェック、ズーム
 // ・「すべてクリア」で localStorage も消す
-// ・保存キーを v4 に更新（旧データが混ざらないよう無効化）
+// ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
@@ -35,8 +35,6 @@
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
 
     const MIN_ZOOM = 0.5, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
-
-    // 保存キー（過去のデータを使わないためバージョン更新）
     const LS_KEY = 'gattai_state_v4';
 
     // ===== 状態 =====
@@ -64,7 +62,7 @@
     }
     function setStatus(msg){ if (statusDiv) statusDiv.textContent = msg; }
     function updateButtonStates(){
-      byId('zoomPct') && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
+      zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
       generateProblemButton && (generateProblemButton.disabled = squares.length === 0);
       deleteButton && (deleteButton.disabled = activeSquareId == null);
       clearAllBoardsButton && (clearAllBoardsButton.disabled = squares.length === 0);
@@ -196,7 +194,7 @@
     clearAllBoardsButton?.addEventListener('click', ()=>{
       if (!confirm('配置した盤面をすべて削除します。よろしいですか？')) return;
       squares=[]; activeSquareId=null; activeCell=null; isProblemGenerated=false; showSolution=false;
-      localStorage.removeItem(LS_KEY); // ★完全クリア
+      localStorage.removeItem(LS_KEY);
       setStatus('すべての盤面をクリアしました'); updateButtonStates(); draw();
     });
 
@@ -238,9 +236,10 @@
       const a = document.createElement('a'); a.href=url; a.download='gattai_export.json'; a.click(); URL.revokeObjectURL(url);
     });
 
-    // ===== サーバ生成 =====
+    // ===== サーバ生成 + フォールバック =====
     async function handleGenerateProblem(){
       if (squares.length===0) { alert('まず「盤面を追加」してください'); return; }
+      // 初期化
       for (const sq of squares){
         sq.problemData=createEmptyGrid();
         sq.userData=createEmptyGrid();
@@ -249,31 +248,42 @@
         sq._userBackup=null;
       }
       showSolution=false; isProblemGenerated=false; updateButtonStates(); draw();
+
+      const diff = difficultySel ? String(difficultySel.value||'normal') : 'normal';
+      const layout = squares.map(s=>({ id:String(s.id), x:Math.round(s.x), y:Math.round(s.y) }));
+
       try{
         generateProblemButton.disabled=true;
-        const diff = difficultySel ? String(difficultySel.value||'normal') : 'normal';
         setStatus(`問題を生成しています...（難易度: ${diff}）`);
-        const layout = squares.map(s=>({ id:String(s.id), x:Math.round(s.x), y:Math.round(s.y) }));
+        // 1) サーバ
         const boards = await generateFromServer(layout, /*adShown=*/false, diff);
         renderBoards(boards);
         isProblemGenerated=true;
-        setStatus(`問題を作成しました！（${boards.length}盤）`);
+        setStatus(`問題を作成しました！（サーバ生成 / ${boards.length}盤）`);
         saveState();
       } catch(err){
-        console.error(err);
-        alert(err?.message || 'サーバ生成に失敗しました');
-        setStatus('サーバ生成に失敗しました');
+        console.warn('API失敗。ローカル生成に切替: ', err);
+        // 2) ローカル・フォールバック
+        const boards = generateLocally(layout, diff);
+        renderBoards(boards);
+        isProblemGenerated=true;
+        setStatus(`問題を作成しました！（ローカル生成 / ${boards.length}盤）`);
+        saveState();
       } finally {
         generateProblemButton.disabled=false; updateButtonStates(); draw();
       }
     }
+
     async function generateFromServer(layout, adShown=false, difficulty='normal'){
       const res = await fetch('/api/generate', {
         method:'POST',
         headers:{ 'content-type':'application/json' },
         body: JSON.stringify({ layout, adShown, difficulty })
       });
-      if (!res.ok) { const t = await safeText(res); throw new Error(`APIエラー: ${res.status} ${t}`); }
+      if (!res.ok) {
+        const t = await safeText(res);
+        throw new Error(`API ${res.status}: ${t || res.statusText}`);
+      }
       const data = await res.json();
       if (!data?.ok) throw new Error(data?.reason || 'ok=false');
       return data.puzzle?.boards || [];
@@ -290,11 +300,10 @@
         sq.checkData = createEmptyGrid();
       }
       updateButtonStates(); draw();
-      // 生成直後は必ず保存（旧データ混入防止）
       saveState();
     }
 
-    // ===== チェック =====
+    // ===== 単盤チェック =====
     function runCheck(sq){
       sq.checkData = createEmptyGrid();
       const val = (r,c)=> (sq.userData[r][c] || sq.problemData[r][c] || 0);
@@ -330,7 +339,7 @@
       }
     }
 
-    // （合体用）共有マス不一致
+    // （合体用）共有マス不一致の検出
     function buildOverlapsClient(sqs){
       const norm = sqs.map(s=>({ id:String(s.id), ox:Math.round(s.x/CELL), oy:Math.round(s.y/CELL) }));
       const n = norm.length, overlaps=[];
@@ -388,7 +397,7 @@
           checkData:createEmptyGrid(), _userBackup:null
         }));
         isProblemGenerated = !!obj.isProblemGenerated && squares.length>0;
-        showSolution = false; // ★復元時は必ずオフ（旧状態を引きずらない）
+        showSolution = false; // 復元時はオフ
         applyTransform(); return true;
       }catch{ return false; }
     }
@@ -407,5 +416,118 @@
     if (!loadState()) setStatus('レイアウト編集モード：盤を追加して配置してください');
     else setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトは復元されました');
     updateButtonStates(); draw();
+
+    // ========= ここからローカル生成ロジック =========
+
+    function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+    function makeGlobalPattern(){
+      function makeOrder(){
+        const bandOrder = shuffle([0,1,2]);
+        const order=[];
+        for(const b of bandOrder){ const inner=shuffle([0,1,2]); for(const k of inner) order.push(b*3+k); }
+        return order;
+      }
+      const rowOrder=makeOrder(), colOrder=makeOrder(), digitPerm=shuffle([1,2,3,4,5,6,7,8,9]);
+      const base=(r,c)=>(r*3 + Math.floor(r/3) + c) % 9;
+      function valueAt(R,C){
+        const r=rowOrder[((R%9)+9)%9], c=colOrder[((C%9)+9)%9];
+        return digitPerm[ base(r,c) ];
+      }
+      return { valueAt };
+    }
+
+    function carveBoard(solved, hintTarget){
+      const g = solved.map(r=>r.slice());
+      const cells=[...Array(81).keys()]; shuffle(cells);
+      let toRemove=Math.max(0, 81-hintTarget);
+      for(const idx of cells){
+        if(toRemove<=0) break;
+        const r=(idx/9)|0, c=idx%9, or=8-r, oc=8-c;
+        if(g[r][c]===0 && g[or][oc]===0) continue;
+        g[r][c]=0; g[or][oc]=0;
+        toRemove -= (r===or && c===oc) ? 1 : 2;
+      }
+      return g;
+    }
+
+    function normalizeLayout(layout){
+      return layout.map(o=>({
+        id:String(o.id),
+        ox: Math.round((Number(o.x)||0)/CELL),
+        oy: Math.round((Number(o.y)||0)/CELL),
+        rawx: Number(o.x)||0,
+        rawy: Number(o.y)||0
+      }));
+    }
+    function buildOverlaps(nlayout){
+      const n=nlayout.length, overlaps=Array.from({length:n},()=>[]);
+      for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
+        const A=nlayout[i], B=nlayout[j];
+        const R0=Math.max(0, B.oy-A.oy), C0=Math.max(0, B.ox-A.ox);
+        const R1=Math.min(8, (B.oy+8)-A.oy), C1=Math.min(8, (B.ox+8)-A.ox);
+        if (R0<=R1 && C0<=C1){
+          const cells=[];
+          for (let r=R0;r<=R1;r++) for (let c=C0;c<=C1;c++){
+            const r2=r + A.oy - B.oy, c2=c + A.ox - B.ox;
+            cells.push({ r,c,r2,c2 });
+          }
+          overlaps[i].push({ j, cells });
+          overlaps[j].push({ j:i, cells: cells.map(({r,c,r2,c2})=>({ r:r2,c:c2,r2:r,c2:c })) });
+        }
+      }
+      return overlaps;
+    }
+    function unifyGivenCells(puzzles, overlaps){
+      for (let i=0;i<overlaps.length;i++){
+        for (const e of overlaps[i]){
+          const j=e.j;
+          for (const {r,c,r2,c2} of e.cells){
+            const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
+            if (a!==0 && b===0) puzzles[j][r2][c2]=a;
+            else if (b!==0 && a===0) puzzles[i][r][c]=b;
+          }
+        }
+      }
+    }
+    function enforceOverlapBySolution(puzzles, solved, overlaps){
+      for (let i=0;i<overlaps.length;i++){
+        for (const e of overlaps[i]){
+          const j=e.j;
+          for (const {r,c,r2,c2} of e.cells){
+            const sVal=solved[i][r][c];
+            if (puzzles[i][r][c]!==0 || puzzles[j][r2][c2]!==0){
+              puzzles[i][r][c]=sVal; puzzles[j][r2][c2]=sVal;
+            }
+          }
+        }
+      }
+    }
+    function clampPuzzleToSolution(puzzle, solution){
+      for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+        const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
+      }
+    }
+
+    function generateLocally(layout, difficulty='normal'){
+      const HINT = { easy:40, normal:36, hard:30 }[difficulty] ?? 36;
+      const nlayout = normalizeLayout(layout);
+      const pattern = makeGlobalPattern();
+      const solved = nlayout.map(({ox,oy}) =>
+        Array.from({length:GRID},(_,r)=> Array.from({length:GRID},(_,c)=> pattern.valueAt(oy+r, ox+c)))
+      );
+      let puzzles = solved.map(g=>carveBoard(g, HINT));
+      const overlaps = buildOverlaps(nlayout);
+      unifyGivenCells(puzzles, overlaps);
+      enforceOverlapBySolution(puzzles, solved, overlaps);
+      for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
+      return nlayout.map((o, idx) => ({
+        id: layout[idx].id,
+        x: o.rawx, y: o.rawy,
+        grid: puzzles[idx],
+        solution: solved[idx],
+      }));
+    }
+    // ========= ローカル生成ここまで =========
   });
 })();
