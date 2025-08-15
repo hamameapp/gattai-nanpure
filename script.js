@@ -1,17 +1,17 @@
-// script.js — Cloudflare Pages フロント（サーバ生成専用＋画像保存対応）
+// script.js — Cloudflare Pages フロント（サーバ生成＋画像保存でID帯を除外）
 //
 // ・ズーム/パン（Space/右/中ドラッグ + Ctrl+ホイール + ホイールパン）
-// ・盤面追加は「いま見ている中心」に生成（移動が楽）
+// ・盤面追加は「いま見ている中心」に生成
 // ・Yは3セル単位スナップ
-// ・サーバ生成のみ（ローカル生成は使用しない）
+// ・サーバ生成
 // ・矛盾チェック（行/列/箱/共有）
 // ・解答トグル
-// ・エクスポート：JSON保存、PNG保存（画面/全体）
+// ・エクスポート：JSON保存、PNG保存（画面/全体）※画像保存時はID帯を描かない
 // ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
-    const USE_LOCAL_ONLY = false; // ★サーバ生成のみ
+    const USE_LOCAL_ONLY = false; // サーバ生成のみ
 
     // ===== DOM =====
     const canvas = document.getElementById('canvas');
@@ -149,47 +149,61 @@
 
     // ===== 描画 =====
     function draw(){
+      // 背景
       ctx.save(); ctx.setTransform(devicePR,0,0,devicePR,0,0); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore();
+      // 盤
       applyTransform();
-      for (const s of squares) drawBoard(s);
+      for (const s of squares) drawBoardGeneric(ctx, s, /*omitLabels*/false);
+      // セル選択
       if (activeCell){
         const s=squares.find(x=>String(x.id)===String(activeCell.id));
         if (s){ ctx.save(); ctx.globalAlpha=.25; ctx.fillStyle='#66aaff';
           const x=s.x+activeCell.c*CELL, y=s.y+activeCell.r*CELL; ctx.fillRect(x,y,CELL,CELL); ctx.restore(); }
       }
     }
-    function drawBoard(s){
-      ctx.save();
+
+    // 共通の描画（contextを指定。画像保存用に omitLabels を切り替え）
+    function drawBoardGeneric(c2, s, omitLabels=false, ox=0, oy=0){
+      c2.save();
+      // 外枠
       const isActive=String(s.id)===String(activeSquareId);
-      ctx.strokeStyle=isActive?'#2b90ff':'#222'; ctx.lineWidth=isActive?3:1.5;
-      ctx.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
-      ctx.lineWidth=1; ctx.strokeStyle='#aaa';
+      c2.strokeStyle=isActive && !omitLabels ? '#2b90ff' : '#222';
+      c2.lineWidth=isActive && !omitLabels ? 3 : 1.5;
+      c2.strokeRect(ox+s.x-.5, oy+s.y-.5, s.w+1, s.h+1);
+
+      // 細線
+      c2.lineWidth=1; c2.strokeStyle='#aaa';
       for(let i=1;i<GRID;i++){
-        const gx=s.x+i*CELL, gy=s.y+i*CELL;
-        ctx.beginPath(); ctx.moveTo(gx+.5,s.y); ctx.lineTo(gx+.5,s.y+s.h); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(s.x,gy+.5); ctx.lineTo(s.x+s.w,gy+.5); ctx.stroke();
+        const gx=ox+s.x+i*CELL, gy=oy+s.y+i*CELL;
+        c2.beginPath(); c2.moveTo(gx+.5,oy+s.y); c2.lineTo(gx+.5,oy+s.y+s.h); c2.stroke();
+        c2.beginPath(); c2.moveTo(ox+s.x,gy+.5); c2.lineTo(ox+s.x+s.w,gy+.5); c2.stroke();
       }
-      ctx.lineWidth=2; ctx.strokeStyle='#333';
+      // 太線（3×3）
+      c2.lineWidth=2; c2.strokeStyle='#333';
       for(let i=0;i<=GRID;i+=3){
-        const gx=s.x+i*CELL+.5, gy=s.y+i*CELL+.5;
-        ctx.beginPath(); ctx.moveTo(gx,s.y); ctx.lineTo(gx,s.y+s.h); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(s.x,gy); ctx.lineTo(s.x+s.w,gy); ctx.stroke();
+        const gx=ox+s.x+i*CELL+.5, gy=oy+s.y+i*CELL+.5;
+        c2.beginPath(); c2.moveTo(gx,oy+s.y); c2.lineTo(gx,oy+s.y+s.h); c2.stroke();
+        c2.beginPath(); c2.moveTo(ox+s.x,gy); c2.lineTo(ox+s.x+s.w,gy); c2.stroke();
       }
-      ctx.font=FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+      // 数字
+      c2.font=FONT; c2.textAlign='center'; c2.textBaseline='middle';
       for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
-        const px=s.x+c*CELL+CELL/2, py=s.y+r*CELL+CELL/2;
+        const px=ox+s.x+c*CELL+CELL/2, py=oy+s.y+r*CELL+CELL/2;
         const giv=s.problemData[r][c]|0, usr=s.userData[r][c]|0;
-        if (giv>0){ ctx.fillStyle='#000'; ctx.fillText(String(giv),px,py); }
+        if (giv>0){ c2.fillStyle='#000'; c2.fillText(String(giv),px,py); }
         else if (usr>0){ const bad=((s.checkData[r][c]|0)===1);
-          ctx.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
-          ctx.fillText(String(usr),px,py);
+          c2.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
+          c2.fillText(String(usr),px,py);
         }
       }
-      ctx.fillStyle=isActive?'#2b90ff':'#666';
-      ctx.fillRect(s.x, s.y-18, 30, 18);
-      ctx.fillStyle='#fff'; ctx.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-      ctx.fillText(s.id, s.x+15, s.y-9);
-      ctx.restore();
+      // ID帯（omitLabels=trueのときは描かない）
+      if (!omitLabels){
+        c2.fillStyle=isActive?'#2b90ff':'#666';
+        c2.fillRect(ox+s.x, oy+s.y-18, 30, 18);
+        c2.fillStyle='#fff'; c2.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+        c2.fillText(s.id, ox+s.x+15, oy+s.y-9);
+      }
+      c2.restore();
     }
 
     // ===== ヒット判定 =====
@@ -226,7 +240,7 @@
       const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
       const ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
       const s={ id:nextId(), x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
-        problemData:createEmptyGrid(), userData:createEmptyGrid(), checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
+        problemData:createEmptyGrid(), userData=createEmptyGrid(), checkData=createEmptyGrid(), solutionData=createEmptyGrid(), _userBackup:null };
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
       setStatus('盤を追加：いま見ている中心に生成しました（Space/右ドラッグでパン、Ctrl+ホイールでズーム）');
       updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
@@ -277,21 +291,36 @@
       downloadBlob(blob, `gattai_${timestamp()}.json`);
     });
 
-    exportImageButton?.addEventListener('click', async ()=>{
-      // 画面に見えているままを保存（ズーム/パン反映済み）
-      canvas.toBlob((blob)=>{
+    // 画像保存（画面の見た目サイズで／ID帯なし）
+    exportImageButton?.addEventListener('click', ()=>{
+      const off = document.createElement('canvas');
+      off.width = canvas.width;
+      off.height = canvas.height;
+      const octx = off.getContext('2d', { alpha:false });
+
+      // 背景
+      octx.save();
+      octx.setTransform(1,0,0,1,0,0);
+      octx.fillStyle = '#ffffff';
+      octx.fillRect(0,0,off.width,off.height);
+      octx.restore();
+
+      // 画面と同じ変換（ズーム・パン・devicePR）で描くが、ID帯は省略
+      octx.setTransform(devicePR*zoom,0,0,devicePR*zoom, devicePR*panX, devicePR*panY);
+      for (const s of squares) drawBoardGeneric(octx, s, /*omitLabels*/true);
+
+      off.toBlob((blob)=>{
         if (!blob) return;
         downloadBlob(blob, `gattai_view_${timestamp()}.png`);
       });
     });
 
-    exportImageAllButton?.addEventListener('click', async ()=>{
-      // 全盤面が入るキャンバスを作って描画して保存
+    // 画像保存（全体を1枚に／ID帯なし）
+    exportImageAllButton?.addEventListener('click', ()=>{
       const {minX,minY,maxX,maxY}=contentBounds();
       const pad = 20;
       const worldW = Math.ceil(maxX - minX + pad*2);
       const worldH = Math.ceil(maxY - minY + pad*2);
-      // サイズ安全策: 最大8192pxに収める
       const maxDim = 8192;
       const scale = Math.min(2, maxDim / worldW, maxDim / worldH);
       const W = Math.max(1, Math.floor(worldW * scale));
@@ -300,21 +329,17 @@
       const off = document.createElement('canvas');
       off.width = W; off.height = H;
       const octx = off.getContext('2d', { alpha:false });
+
       // 背景
       octx.fillStyle = '#ffffff';
       octx.fillRect(0,0,W,H);
 
-      // 描画（スケール）
+      // スケールと原点オフセット（ID帯を描かない）
       octx.save();
       octx.scale(scale, scale);
-      // 基準をオフセット
       const ox = pad - minX;
       const oy = pad - minY;
-
-      // 盤
-      for (const s of squares) drawBoardTo(octx, s, ox, oy);
-
-      // ハイライトは保存しない（見たままにしたい場合は activeCell も描画可）
+      for (const s of squares) drawBoardGeneric(octx, s, /*omitLabels*/true, ox, oy);
       octx.restore();
 
       off.toBlob((blob)=>{
@@ -322,47 +347,6 @@
         downloadBlob(blob, `gattai_all_${timestamp()}.png`);
       });
     });
-
-    function drawBoardTo(c2, s, ox=0, oy=0){
-      // グリッドと数字を out-context に描く
-      c2.save();
-      // 外枠
-      const isActive = String(s.id)===String(activeSquareId);
-      c2.strokeStyle = isActive ? '#2b90ff' : '#222';
-      c2.lineWidth = isActive ? 3 : 1.5;
-      c2.strokeRect(ox+s.x-.5, oy+s.y-.5, s.w+1, s.h+1);
-      // 細線
-      c2.lineWidth=1; c2.strokeStyle='#aaa';
-      for(let i=1;i<GRID;i++){
-        const gx=ox+s.x+i*CELL, gy=oy+s.y+i*CELL;
-        c2.beginPath(); c2.moveTo(gx+.5,oy+s.y); c2.lineTo(gx+.5,oy+s.y+s.h); c2.stroke();
-        c2.beginPath(); c2.moveTo(ox+s.x,gy+.5); c2.lineTo(ox+s.x+s.w,gy+.5); c2.stroke();
-      }
-      // 太線（3×3）
-      c2.lineWidth=2; c2.strokeStyle='#333';
-      for(let i=0;i<=GRID;i+=3){
-        const gx=ox+s.x+i*CELL+.5, gy=oy+s.y+i*CELL+.5;
-        c2.beginPath(); c2.moveTo(gx,oy+s.y); c2.lineTo(gx,oy+s.y+s.h); c2.stroke();
-        c2.beginPath(); c2.moveTo(ox+s.x,gy); c2.lineTo(ox+s.x+s.w,gy); c2.stroke();
-      }
-      // 数字
-      c2.font = FONT; c2.textAlign='center'; c2.textBaseline='middle';
-      for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
-        const px=ox+s.x+c*CELL+CELL/2, py=oy+s.y+r*CELL+CELL/2;
-        const giv=s.problemData[r][c]|0, usr=s.userData[r][c]|0;
-        if (giv>0){ c2.fillStyle='#000'; c2.fillText(String(giv),px,py); }
-        else if (usr>0){ const bad=((s.checkData[r][c]|0)===1);
-          c2.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
-          c2.fillText(String(usr),px,py);
-        }
-      }
-      // IDタグ
-      c2.fillStyle = isActive ? '#2b90ff' : '#666';
-      c2.fillRect(ox+s.x, oy+s.y-18, 30, 18);
-      c2.fillStyle='#fff'; c2.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-      c2.fillText(s.id, ox+s.x+15, oy+s.y-9);
-      c2.restore();
-    }
 
     function downloadBlob(blob, filename){
       const url = URL.createObjectURL(blob);
@@ -377,7 +361,7 @@
       return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     }
 
-    // ===== 生成（サーバ専用）=====
+    // ===== 生成（サーバ）=====
     async function handleGenerateProblem(){
       if (squares.length===0){ alert('まず「盤面を追加」してください'); return; }
       // 初期化
