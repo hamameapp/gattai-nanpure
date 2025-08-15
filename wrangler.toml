@@ -1,27 +1,16 @@
-# プロジェクト名（任意）
 name = "gattai-nanpure"
-
-# Workers の互換日付（新しめ推奨）
 compatibility_date = "2024-11-01"
-
-# Cloudflare Pages で “リポジトリ直下” を配信する想定
 pages_build_output_dir = "."
 
-# === KV バインド（ダッシュボードに「wrangler.tomlで管理」と出ていたためこちらで指定） ===
-# Namespace ID はあなたが作成したものを設定
+# 同じ Namespace ID を QUOTA と MY_KV の両方でバインド（どちらの名前でも使える）
 kv_namespaces = [
-  { binding = "QUOTA", id = "a883f982a7904af7bbc0a2efcf6a6048" }
+  { binding = "QUOTA", id = "e74451c9be784ff380e1039aaa03794e" },
+  { binding = "MY_KV", id = "e74451c9be784ff380e1039aaa03794e" }
 ]
 
-# === 生成APIの動作パラメータ（必要に応じてダッシュボード側でも上書き可能） ===
 [vars]
-# 1日あたりの無料生成回数（広告未表示時）
 DAILY_LIMIT = "20"
-# 広告表示の“目安”時の緩和上限
 DAILY_LIMIT_WITH_AD = "100"
-# サーバ側生成タイムアウト（ミリ秒）
 GEN_TIMEOUT_MS = "3500"
-# 最大盤数
 MAX_BOARDS = "40"
-# 失敗時の再試行（必要なら実装で使用）
 GEN_RETRY = "3"
