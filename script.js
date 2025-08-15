@@ -1,9 +1,10 @@
 // script.js — Cloudflare Pages フロント
 // ・ズーム 10%〜200%（カーソル中心ズーム）＋ パン（Space/右/中ドラッグ, ホイールパン, Shift+ホイール横）
-// ・盤面追加は「いま見ている中心」に生成（移動が楽）
+// ・盤面追加は「いま見ている中心」に生成
 // ・Yは3セル単位でスナップ（箱崩れ防止）
 // ・ローカル生成（安全バリデーション）/ サーバ連携（オプション）
-// ・矛盾チェック（行/列/箱/共有）と唯一性チェック（未判定=-1対応 & ガード強化）
+// ・矛盾チェック（行/列/箱/共有）と唯一性チェック
+// ・★新規：生成前に「レイアウト自己矛盾」検出（循環で同一盤の同一行/列/箱に同一セルを強制する場合）
 // ・すべて削除ボタン
 // ・保存キー: v4
 
@@ -19,8 +20,8 @@
     const deleteButton = byId('deleteButton');
     const clearAllBoardsButton = byId('clearAllBoardsButton');
     const generateProblemButton = byId('generateProblemButton');
-    const checkButton = byId('checkButton');
-    const uniqueButton = byId('uniqueButton');
+    const checkButton = byId('checkButton');     // 矛盾チェック
+    const uniqueButton = byId('uniqueButton');   // 一意解チェック
     const solveButton = byId('solveButton');
     const exportTextButton = byId('exportTextButton');
     const difficultySel = document.getElementById('difficulty');
@@ -282,6 +283,15 @@
     // ===== 生成（ローカル優先）=====
     async function handleGenerateProblem(){
       if (squares.length===0){ alert('まず「盤面を追加」してください'); return; }
+
+      // ★生成前：レイアウト自己矛盾チェック
+      const layoutIssue = detectImpossibleLayout();
+      if (!layoutIssue.ok){
+        alert(`このレイアウトでは生成できません：\n${layoutIssue.reason}`);
+        setStatus(`レイアウトが自己矛盾：${layoutIssue.reason}`);
+        return;
+      }
+
       for (const sq of squares){ sq.problemData=createEmptyGrid(); sq.userData=createEmptyGrid(); sq.checkData=createEmptyGrid(); sq.solutionData=createEmptyGrid(); sq._userBackup=null; }
       showSolution=false; isProblemGenerated=false; updateButtonStates(); draw();
 
@@ -404,6 +414,15 @@
     // ===== 唯一性チェック（0=解なし,1=唯一,2=複数, -1=未判定）=====
     async function handleUniqueCheck(){
       if (!isProblemGenerated) return;
+
+      // 先にレイアウト自己矛盾がないかを表示
+      const layoutIssue = detectImpossibleLayout();
+      if (!layoutIssue.ok){
+        setStatus(`レイアウトが自己矛盾：${layoutIssue.reason}`);
+        alert(`唯一性チェックの前に修正してください：\n${layoutIssue.reason}`);
+        return;
+      }
+
       uniqueButton && (uniqueButton.disabled = true);
       setStatus('唯一性チェック中…（解が2つ見つかったら打ち切ります）');
       await new Promise(r=>requestAnimationFrame(r));
@@ -422,10 +441,44 @@
       }
     }
 
+    // === レイアウト自己矛盾の検出 ===
+    // 同一の等価クラス（共有セル）が、同一盤の「同じ行/列/ブロック」に2箇所以上現れると Sudoku 的に不可能。
+    function detectImpossibleLayout(){
+      if (squares.length===0) return { ok:true };
+      const overlaps = buildOverlapsClient(squares);
+      const idOf = (b,r,c)=> b*81 + r*9 + c;
+      const N = squares.length * 81;
+      const parent = new Int32Array(N); for (let i=0;i<N;i++) parent[i]=i;
+      const find=(x)=>{ while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+      const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) parent[b]=a; };
+
+      for (const {i,j,cells} of overlaps){
+        for (const {r,c,r2,c2} of cells){ unite(idOf(i,r,c), idOf(j,r2,c2)); }
+      }
+      // クラス -> 盤ごとの出現を記録
+      const rows=Object.create(null), cols=Object.create(null), boxes=Object.create(null);
+      for (let b=0;b<squares.length;b++){
+        for (let r=0;r<9;r++) for (let c=0;c<9;c++){
+          const root=find(idOf(b,r,c));
+          const key=String(root)+'#'+b;
+          const bi = Math.floor(r/3)*3 + Math.floor(c/3);
+          if (!rows[key]) rows[key]=new Set();
+          if (!cols[key]) cols[key]=new Set();
+          if (!boxes[key]) boxes[key]=new Set();
+          // 同一クラスが同一盤の同じ行/列/箱に2回以上出たら不可能
+          if (rows[key].has(r)) return { ok:false, reason:`同一セルの共有が同一盤の同じ行に重複しています（盤#${b+1} 行${r+1}）` };
+          if (cols[key].has(c)) return { ok:false, reason:`同一セルの共有が同一盤の同じ列に重複しています（盤#${b+1} 列${c+1}）` };
+          if (boxes[key].has(bi)) return { ok:false, reason:`同一セルの共有が同一盤の同じブロックに重複しています（盤#${b+1} ブロック${bi+1}）` };
+          rows[key].add(r); cols[key].add(c); boxes[key].add(bi);
+        }
+      }
+      return { ok:true };
+    }
+
+    // === 唯一性チェック本体（0=解なし,1=唯一,2=複数, -1=未判定）===
     function checkUniquenessCombined(){
       if (squares.length === 0) return -1;
 
-      // --- Union-Find で共有セルを同一視 ---
       const overlaps = buildOverlapsClient(squares);
       const idOf = (b,r,c)=> b*81 + r*9 + c;
       const N = squares.length * 81;
@@ -434,27 +487,25 @@
       const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) parent[b]=a; };
       for (const {i,j,cells} of overlaps){ for (const {r,c,r2,c2} of cells){ unite(idOf(i,r,c), idOf(j,r2,c2)); } }
 
-      // --- 変数クラスを堅牢に構築（Object で確実に配列化）---
       const groups = Object.create(null);
       for (let b=0;b<squares.length;b++){
         for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-          const root = find(idOf(b,r,c));
+          const root=find(idOf(b,r,c));
           (groups[root] ??= []).push({b,r,c});
         }
       }
-      const vars = Object.values(groups); // すべて配列
+      const vars = Object.values(groups);
 
-      // --- 制約マスク（ビット 1..9 使用）---
       const ROW = Array.from({length:squares.length}, ()=> new Uint16Array(9));
       const COL = Array.from({length:squares.length}, ()=> new Uint16Array(9));
       const BOX = Array.from({length:squares.length}, ()=> new Uint16Array(9));
-      const BIT = d => 1<<d; const ALL = 0x3FE; // 1..9
+      const BIT = d => 1<<d; const ALL = 0x3FE;
 
-      // 与えを反映＆矛盾検出
+      // 与え反映
       const fixedVal = new Map();
       for (let vi=0; vi<vars.length; vi++){
         const occs = vars[vi];
-        if (!Array.isArray(occs) || occs.length===0) continue; // 念のため
+        if (!Array.isArray(occs) || occs.length===0) continue;
         let forced = 0;
         for (const {b,r,c} of occs){
           const giv = squares[b].problemData[r][c]|0;
@@ -477,10 +528,9 @@
 
       function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
       function ctz(x){ if (x===0) return 0; let n=0; while(((x>>>n)&1)===0) n++; return n; }
-
       function domainMaskOfVar(varIdx){
         const occs = vars[varIdx];
-        if (!Array.isArray(occs)) return 0;  // ★ガード
+        if (!Array.isArray(occs)) return 0;
         let mask = ALL;
         for (const {b,r,c} of occs){
           const bi=Math.floor(r/3)*3 + Math.floor(c/3);
@@ -490,14 +540,8 @@
         }
         return mask;
       }
+      order.sort((a,b)=>popcnt(domainMaskOfVar(a)) - popcnt(domainMaskOfVar(b)));
 
-      // MRV ソート（不正なら末尾扱い）
-      order.sort((a,b)=>{
-        const da = domainMaskOfVar(a); const db = domainMaskOfVar(b);
-        return popcnt(da) - popcnt(db);
-      });
-
-      // バックトラック（未判定 -1 を区別）
       let solutions=0, nodes=0;
       const LIMIT_NODES = Math.max(100000, 100000 + order.length * 300);
       let limitHit = false;
@@ -513,7 +557,7 @@
 
         while(mask){
           const v=ctz(mask); mask&=mask-1; const bit=1<<v;
-          const occs=vars[vi]; if (!Array.isArray(occs)) return; // ★ガード
+          const occs=vars[vi]; if (!Array.isArray(occs)) return;
           let ok=true; const touched=[];
           for (const {b,r,c} of occs){
             const bi=Math.floor(r/3)*3 + Math.floor(c/3);
