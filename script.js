@@ -107,23 +107,21 @@
       if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
 
-    // ホイール：Ctrl/⌘+ホイール = ズーム、 Space押しながら = パン（Shiftで横）
+    // ホイール：Ctrl/⌘+ホイール = ズーム、 それ以外 = パン（Shiftで横）
     canvas.addEventListener('wheel', (e)=>{
       const rect = canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey){
-        // ズーム（ピンチ相当）
         e.preventDefault();
         const mx=e.clientX-rect.left, my=e.clientY-rect.top;
         setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
-      }else if (isSpaceDown){
-        // Spaceを押しながらの時だけ、ホイールでパン
-        e.preventDefault();
-        if (e.shiftKey){ panX -= e.deltaY; }
-        else { panX -= e.deltaX; panY -= e.deltaY; }
-        applyTransform(); draw(); saveState();
       }else{
-        // それ以外は何もしない（ページの通常スクロールを許可）
-        return;
+        e.preventDefault();
+        if (e.shiftKey){
+          panX -= e.deltaY;
+        }else{
+          panX -= e.deltaX; panY -= e.deltaY;
+        }
+        applyTransform(); draw(); saveState();
       }
     }, { passive:false });
 
@@ -402,7 +400,7 @@
       const margin = 20;
       const regionW = Math.ceil((maxX-minX) + margin*2);
       const regionH = Math.ceil((maxY-minY) + margin*2);
-      const scale = 2; // 高解像度で出力
+      const scale = (window.__EXPORT_SCALE__ || 1); // 外部から指定（未指定は1x）
       const baseX = margin - minX;
       const baseY = margin - minY;
 
