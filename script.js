@@ -167,7 +167,7 @@ function drawBoard(s){
   ctx.save();
   const isActive = String(s.id) === String(activeSquareId);
 
-  // 細グリッド（変更なし）
+  // 細グリッド（そのまま）
   ctx.lineWidth = 1;
   ctx.strokeStyle = '#aaa';
   for (let i = 1; i < GRID; i++) {
@@ -176,17 +176,19 @@ function drawBoard(s){
     ctx.beginPath(); ctx.moveTo(s.x,      gy + .5); ctx.lineTo(s.x + s.w, gy + .5); ctx.stroke();
   }
 
-  // 太線（3x3）— 2px 線は整数座標に置く（★ここが修正点）
+  // 太線（3x3）— 2px線は整数座標、0/GRIDは描かない（重なり防止）
   ctx.lineWidth = 2;
   ctx.strokeStyle = '#333';
-  for (let i = 0; i <= GRID; i += 3) {
-    const gx = s.x + i * CELL;   // ★ +.5 を削除
-    const gy = s.y + i * CELL;   // ★ +.5 を削除
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'miter';
+  for (let i = 3; i < GRID; i += 3) {
+    const gx = s.x + i * CELL;
+    const gy = s.y + i * CELL;
     ctx.beginPath(); ctx.moveTo(gx, s.y);      ctx.lineTo(gx, s.y + s.h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(s.x, gy);      ctx.lineTo(s.x + s.w, gy); ctx.stroke();
   }
 
-  // 数字（変更なし）
+  // 数字（そのまま）
   ctx.font = FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
     const px = s.x + c * CELL + CELL / 2, py = s.y + r * CELL + CELL / 2;
@@ -199,7 +201,7 @@ function drawBoard(s){
     }
   }
 
-  // タグ（変更なし）
+  // タグ（そのまま）
   ctx.fillStyle = isActive ? '#2b90ff' : '#666';
   ctx.fillRect(s.x, s.y - 18, 30, 18);
   ctx.fillStyle = '#fff';
@@ -207,7 +209,7 @@ function drawBoard(s){
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(s.id, s.x + 15, s.y - 9);
 
-  // 外枠は最後に一度だけ描く（★ここが修正点）
+  // 外枠は最後に一度だけ（重なり防止）
   ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
   ctx.lineWidth   = isActive ? 3 : 1.5;
   ctx.strokeRect(s.x - .5, s.y - .5, s.w + 1, s.h + 1);
