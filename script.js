@@ -107,28 +107,22 @@
       if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
 
-    // ホイール：Ctrl/⌘+ホイール = ズーム、 Space押下中のみ = パン（Shiftで横）
-    canvas.addEventListener('wheel', (e)=>{
-      const rect = canvas.getBoundingClientRect();
-      if (e.ctrlKey || e.metaKey){
-        // ズーム（ピンチ相当）
-        e.preventDefault();
-        const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-        setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
-      }else if (isSpaceDown){
-        // Space押下中のみパン（Shiftで横）
-        e.preventDefault();
-        if (e.shiftKey){
-          panX -= e.deltaY;
-        }else{
-          panX -= e.deltaX; panY -= e.deltaY;
-        }
-        applyTransform(); draw(); saveState();
-      }else{
-        // それ以外はページのスクロールを許可
-        return;
-      }
-    }, { passive:false });
+    // ホイール：Ctrl/⌘+ホイール = ズーム、 Space押しながら = パン（Shiftで横）
+canvas.addEventListener('wheel', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  if (e.ctrlKey || e.metaKey){
+    e.preventDefault();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
+  }else if (typeof isSpaceDown !== 'undefined' && isSpaceDown){
+    e.preventDefault();
+    if (e.shiftKey){ panX -= e.deltaY; }
+    else { panX -= e.deltaX; panY -= e.deltaY; }
+    applyTransform(); draw(); saveState();
+  }else{
+    return; // 通常スクロール許可
+  }
+}, { passive:false });
 
     // 左UI
     zoomOutBtn?.addEventListener('click', ()=> setZoom(zoom - ZOOM_STEP));
@@ -246,10 +240,10 @@
         panning=true; panStart={mx,my,px:panX,py:panY}; return;
       }
 
-      // 左ドラッグのみではパン開始しない（Space/中/右のみに制限）
+      // 背景を左ドラッグでもパン開始（滑らかパン）
       const s = boardAt(xw,yw);
       if (!s && e.button===0){
-        // 何もしない：背景での左ドラッグは無視（誤操作防止）
+        panning=true; panStart={mx,my,px:panX,py:panY};
         activeSquareId=null; activeCell=null; draw(); updateButtonStates();
         return;
       }
