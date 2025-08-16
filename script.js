@@ -1,13 +1,12 @@
-// script.js — Cloudflare Pages フロント（画像保存ではID帯を描かない）
+// script.js — Cloudflare Pages フロント（フィット改善版）
 // ・ズーム/パン（Space/右/中ドラッグ + Ctrl+ホイール + ホイールパン）
-// ・盤面追加は「いま見ている中心」に生成
+// ・盤面追加は画面中心に生成
 // ・Yは3セル単位スナップ
 // ・サーバ生成（/api/generate）
 // ・矛盾チェック（行/列/箱/共有）
 // ・解答トグル
 // ・エクスポート：JSON保存、PNG保存（画面/全体）※画像保存時はID帯を省略
 // ・保存キー: v4
-
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
     const USE_LOCAL_ONLY = false; // サーバ生成のみ
@@ -44,7 +43,13 @@
     const SNAP_X = CELL;
     const SNAP_Y = CELL * 3;
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-    const MIN_ZOOM = 0.1, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
+
+    const MIN_ZOOM = 0.1;        // 通常の最小ズーム
+    const MIN_ZOOM_FIT = 0.02;   // フィット時はここまで許容して必ず収める
+    const MAX_ZOOM = 2.0;
+    const ZOOM_STEP = 0.1;
+
+    const LABEL_H = 18; // 盤上部のID帯の高さ
     const LS_KEY = 'gattai_state_v4';
 
     // ===== 状態 =====
@@ -92,20 +97,38 @@
       applyTransform(); draw(); updateButtonStates(); saveState();
     }
     function setZoom(z){ const rect=canvas.getBoundingClientRect(); setZoomAt(z, rect.width/2, rect.height/2); }
+
+    // 可視化に使う内容の境界（ID帯を含む）
     function contentBounds(){
       if (squares.length===0) return {minX:0,minY:0,maxX:BOARD_PIX,maxY:BOARD_PIX};
       let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-      for (const s of squares){ minX=Math.min(minX,s.x); minY=Math.min(minY,s.y); maxX=Math.max(maxX,s.x+s.w); maxY=Math.max(maxY,s.y+s.h); }
+      for (const s of squares){
+        minX = Math.min(minX, s.x);
+        // 上のID帯ぶんも含める
+        minY = Math.min(minY, s.y - LABEL_H);
+        maxX = Math.max(maxX, s.x + s.w);
+        maxY = Math.max(maxY, s.y + s.h);
+      }
       return {minX,minY,maxX,maxY};
     }
+
+    // 画面に収める（ID帯も含めて必ず入る）
     function fitZoom(margin=40){
       const rect=canvas.getBoundingClientRect();
-      const {minX,minY,maxX,maxY}=contentBounds(); const w=Math.max(1,maxX-minX), h=Math.max(1,maxY-minY);
-      const z=clamp(Math.min((rect.width-margin*2)/w,(rect.height-margin*2)/h), MIN_ZOOM, MAX_ZOOM);
-      zoom=z; const sw=w*z, sh=h*z;
-      panX=(rect.width - sw)/2 - minX*z; panY=(rect.height - sh)/2 - minY*z;
+      const {minX,minY,maxX,maxY}=contentBounds();
+      const w=Math.max(1, maxX-minX), h=Math.max(1, maxY-minY);
+      const zWanted = Math.min((rect.width-margin*2)/w, (rect.height-margin*2)/h);
+      // フィットは MIN_ZOOM_FIT まで下げてでも入れる
+      const z = clamp(zWanted, MIN_ZOOM_FIT, MAX_ZOOM);
+
+      zoom=z;
+      const sw=w*z, sh=h*z;
+      panX=(rect.width - sw)/2 - minX*z;
+      panY=(rect.height - sh)/2 - minY*z;
+
       applyTransform(); draw(); updateButtonStates(); saveState();
     }
+
     function autoFitIfOverflow(){
       const rect=canvas.getBoundingClientRect();
       const {minX,minY,maxX,maxY}=contentBounds();
@@ -154,12 +177,12 @@
 
     // ===== 描画 =====
     function draw(){
-      // 背景をクリア
+      // 背景クリア
       ctx.save(); ctx.setTransform(devicePR,0,0,devicePR,0,0); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore();
       // 盤面
       applyTransform();
       for (const s of squares) drawBoardGeneric(ctx, s, /*omitLabels*/false);
-      // セル選択
+      // 選択セル
       if (activeCell){
         const s=squares.find(x=>String(x.id)===String(activeCell.id));
         if (s){ ctx.save(); ctx.globalAlpha=.25; ctx.fillStyle='#66aaff';
@@ -183,7 +206,7 @@
         c2.beginPath(); c2.moveTo(gx+.5,oy+s.y); c2.lineTo(gx+.5,oy+s.y+s.h); c2.stroke();
         c2.beginPath(); c2.moveTo(ox+s.x,gy+.5); c2.lineTo(ox+s.x+s.w,gy+.5); c2.stroke();
       }
-      // 太線（3×3）
+      // 太線
       c2.lineWidth=2; c2.strokeStyle='#333';
       for(let i=0;i<=GRID;i+=3){
         const gx=ox+s.x+i*CELL+.5, gy=oy+s.y+i*CELL+.5;
@@ -204,9 +227,10 @@
       // ID帯（omitLabels=true のとき非表示）
       if (!omitLabels){
         c2.fillStyle=isActive?'#2b90ff':'#666';
-        c2.fillRect(ox+s.x, oy+s.y-18, 30, 18);
+        c2.fillRect(ox+s.x, oy+s.y-LABEL_H, 30, LABEL_H);
         c2.fillStyle='#fff'; c2.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-        c2.fillText(s.id, ox+s.x+15, oy+s.y-9);
+        c2.textAlign='center'; c2.textBaseline='middle';
+        c2.fillText(s.id, ox+s.x+15, oy+s.y-LABEL_H/2);
       }
       c2.restore();
     }
@@ -310,7 +334,7 @@
       octx.fillRect(0,0,off.width,off.height);
       octx.restore();
 
-      // 画面と同じ変換（ズーム・パン・devicePR）で描くが、ID帯は省略
+      // 同じ変換で描く（ID帯は省略）
       octx.setTransform(devicePR*zoom,0,0,devicePR*zoom, devicePR*panX, devicePR*panY);
       for (const s of squares) drawBoardGeneric(octx, s, /*omitLabels*/true);
 
@@ -322,7 +346,7 @@
 
     // 画像保存（全体を1枚に／ID帯なし）
     exportImageAllButton?.addEventListener('click', ()=>{
-      const {minX,minY,maxX,maxY}=contentBounds();
+      const {minX,minY,maxX,maxY}=contentBounds(); // ここはID帯込み境界
       const pad = 20;
       const worldW = Math.ceil(maxX - minX + pad*2);
       const worldH = Math.ceil(maxY - minY + pad*2);
@@ -342,8 +366,8 @@
       // スケールと原点オフセット（ID帯を描かない）
       octx.save();
       octx.scale(scale, scale);
-      const ox = pad - minX;
-      const oy = pad - minY;
+      const ox = 20 - minX;
+      const oy = 20 - minY;
       for (const s of squares) drawBoardGeneric(octx, s, /*omitLabels*/true, ox, oy);
       octx.restore();
 
@@ -516,7 +540,7 @@
     // 起動
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('「盤面を追加」を押して配置 → 「合体問題を作成」。Space/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）');
+      setStatus('「盤面を追加」→「合体問題を作成」。Space/右ドラッグでパン、Ctrl+ホイールでズーム、ホイールで移動（Shiftで横）');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
