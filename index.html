@@ -59,13 +59,15 @@
     ]
   }
   </script>
-<!-- Google AdSense loader (test mode ON for H5 adBreak) -->
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous" data-adbreak-test="on"></script>
+
+  <!-- Google AdSense loader (once only) -->
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={ca-pub-1460224105367515}" crossorigin="anonymous"{ data-adbreak-test="on"}></script>
   <script>
     window.adsbygoogle = window.adsbygoogle || [];
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
     try{ adConfig({ sound: 'on' }); }catch(e){}
   </script>
+
 </head>
 <body class="bg-slate-100 min-h-screen">
   <!-- ★ 横幅を拡大：max-w-6xl → max-w-screen-2xl に変更 -->
@@ -128,17 +130,18 @@
       <div id="status">盤を追加して「合体問題を作成」を押してください。</div>
     </div>
     <canvas id="canvas"></canvas>
+
 <!-- === Ad: Below Canvas (Display) === -->
 <div class="adbox my-4" style="min-height:280px">
   <ins class="adsbygoogle"
        style="display:block"
-       data-ad-client="ca-pub-1460224105367515"
-       data-ad-slot="9292972366"
+       data-ad-client="{ca-pub-1460224105367515}"
+       data-ad-slot="{9292972366}"
        data-ad-format="auto"
-       data-full-width-responsive="true"
-       data-adtest="on"></ins>
+       data-full-width-responsive="true"{ data-adtest="on"}></ins>
 </div>
 <script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
+
 
     <!-- 詳しいヘルプ -->
     <section id="help" class="mt-8 bg-white border rounded-lg p-5">
@@ -215,55 +218,60 @@
     -->
   </div>
 
-  <!-- === Ad: In-article (Bottom area) === -->
+  
+<!-- === Ad: In-article (Bottom area) === -->
 <article class="adbox my-6" style="min-height:220px">
   <ins class="adsbygoogle"
        style="display:block;text-align:center"
        data-ad-layout="in-article"
        data-ad-format="fluid"
-       data-ad-client="ca-pub-1460224105367515"
-       data-ad-slot="2862175826"
-       data-adtest="on"></ins>
+       data-ad-client="{ca-pub-1460224105367515}"
+       data-ad-slot="{2862175826}"{ data-adtest="on"}></ins>
 </article>
 <script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
+
+
 <!-- === Ad: Multiplex (Bottom area) === -->
 <div class="adbox my-8" style="min-height:320px">
   <ins class="adsbygoogle"
        style="display:block"
        data-ad-format="autorelaxed"
-       data-ad-client="ca-pub-1460224105367515"
-       data-ad-slot="4012725528"
-       data-adtest="on"></ins>
+       data-ad-client="{ca-pub-1460224105367515}"
+       data-ad-slot="{4012725528}"{ data-adtest="on"}></ins>
 </div>
 <script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
+
 <script src="script.js"></script>
-<!-- === Hooks: reward ad before saving (PNG/JSON) [TEST MODE] === -->
+
+<!-- === Hooks: Show reward ad before saving (PNG/JSON) === -->
 <script>
 (function(){
   function hookReward(buttonId){
     var btn = document.getElementById(buttonId);
-    if (!btn) { console.log('[adHook] not found:', buttonId); return; }
+    if (!btn) return;
     var reentrant = false;
     btn.addEventListener('click', function(ev){
-      if (reentrant) { console.log('[adHook] reentrant skip', buttonId); return; }
-      if (typeof window.adBreak !== 'function') { console.log('[adHook] adBreak undefined, passthrough', buttonId); return; }
-      console.log('[adHook] intercept', buttonId);
+      if (reentrant || typeof window.adBreak !== 'function') {
+        console.log('[adHook]', buttonId, 'adBreak undefined or reentrant, passthrough');
+        return;
+      }
       ev.stopImmediatePropagation();
       ev.preventDefault();
+      console.log('[adHook] intercept', buttonId);
       window.adBreak({
         type: 'reward',
         name: 'save-' + buttonId,
-        beforeReward: function(showAdFn){ console.log('[adHook] beforeReward', buttonId); try{ showAdFn && showAdFn(); }catch(e){ console.warn(e);} },
+        beforeReward: function(showAdFn){ try{ showAdFn && showAdFn(); }catch(e){ console.warn('[adHook] showAd error', e); } },
         adViewed: function(){ console.log('[adHook] viewed', buttonId); reentrant = true; btn.click(); reentrant = false; },
         adDismissed: function(){ console.log('[adHook] dismissed', buttonId); reentrant = true; btn.click(); reentrant = false; },
-        beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){} },
-        afterAd: function(){ console.log('[adHook] afterAd', buttonId); }
+        beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_ ){} },
+        afterAd: function(){}
       });
     }, { capture: true });
   }
-  hookReward('exportImageAllButton'); // PNG
-  hookReward('exportTextButton');     // JSON
+  hookReward('exportImageAllButton'); // PNG保存
+  hookReward('exportTextButton');     // JSON保存
 })();
 </script>
 </body>
