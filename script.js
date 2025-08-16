@@ -44,7 +44,7 @@
     const checkButton           = byId('checkButton');
     const solveButton           = byId('solveButton');
     const exportTextButton      = byId('exportTextButton');
-    const exportImageButton     = byId('exportImageAllButton') || byId('exportImageButton');   // ★画像保存ボタンIDを両対応
+    const exportImageButton     = byId('exportImageAllButton') || byId('exportImageButton');   // 画像保存ボタンIDを両対応
     const difficultySel         = byId('difficulty');
 
     // ズームUI（存在すれば使う）
@@ -432,7 +432,7 @@
       setStatus('JSON を保存しました');
     });
 
-    // 全体画像保存（ラベル非表示）
+    // 全体画像保存（ラベル非表示）— ★ファイル名をタイムスタンプ付きに変更
     exportImageButton?.addEventListener('click', ()=>{
       if (squares.length===0){ alert('まず盤面を追加してください'); return; }
       const {minX,minY,maxX,maxY} = contentBounds();
@@ -481,13 +481,20 @@
       };
 
       for (const s of squares) drawOne(s);
+
+      // --- ここでタイムスタンプ付きファイル名を作成 ---
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const fileName = `gattai_all_${stamp}.png`;
+
       c.toBlob((blob)=>{
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = 'gattai_all.png'; a.click();
+        a.href = url; a.download = fileName; a.click();
         URL.revokeObjectURL(url);
       });
-      setStatus('PNG を保存しました');
+      setStatus(`PNG を保存しました（${fileName}）`);
     });
 
     function updateButtonStates(){
