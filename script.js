@@ -162,67 +162,59 @@
         }
       }
     }
-// ← この関数だけ差し替え（他のコードはそのまま）
+
+    
 function drawBoard(s){
-  ctx.save();
-  const isActive = String(s.id) === String(activeSquareId);
+      ctx.save();
+      const isActive = String(s.id) === String(activeSquareId);
 
-  // 細グリッド（既存どおり）
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = '#aaa';
-  for (let i = 1; i < GRID; i++) {
-    const gx = s.x + i * CELL, gy = s.y + i * CELL;
-    ctx.beginPath(); ctx.moveTo(gx + .5, s.y);      ctx.lineTo(gx + .5, s.y + s.h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(s.x,      gy + .5); ctx.lineTo(s.x + s.w, gy + .5); ctx.stroke();
-  }
+      // 細グリッド
+      ctx.lineWidth=1; ctx.strokeStyle='#aaa';
+      for (let i=1;i<GRID;i++){
+        const gx=s.x+i*CELL, gy=s.y+i*CELL;
+        ctx.beginPath(); ctx.moveTo(gx+.5, s.y);    ctx.lineTo(gx+.5, s.y+s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x,  gy+.5);   ctx.lineTo(s.x+s.w, gy+.5); ctx.stroke();
+      }
 
-  // 太線（3x3）：右端/下端は描かない + 2pxは整数座標に配置
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#333';
-  ctx.lineCap = 'butt';
-  ctx.lineJoin = 'miter';
-  for (let i = 3; i < GRID; i += 3) {            // ★ 0 と GRID を除外
-    const gx = s.x + i * CELL;                   // ★ +0.5 を排除（整数座標）
-    const gy = s.y + i * CELL;                   // ★ 同上
-    ctx.beginPath(); ctx.moveTo(gx, s.y);        ctx.lineTo(gx, s.y + s.h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(s.x, gy);        ctx.lineTo(s.x + s.w, gy); ctx.stroke();
-  }
+      // 太線（3x3）— 2px 線は整数座標、右端/下端は描かない
+      ctx.lineWidth=2; ctx.strokeStyle='#333';
+      ctx.lineCap='butt'; ctx.lineJoin='miter';
+      for (let i=3;i<GRID;i+=3){
+        const gx=s.x+i*CELL, gy=s.y+i*CELL;
+        ctx.beginPath(); ctx.moveTo(gx, s.y);      ctx.lineTo(gx, s.y+s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x, gy);      ctx.lineTo(s.x+s.w, gy); ctx.stroke();
+      }
 
-  // 数字（既存どおり）
-  ctx.font = FONT; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
-    const px = s.x + c * CELL + CELL / 2, py = s.y + r * CELL + CELL / 2;
-    const giv = s.problemData[r][c] | 0, usr = s.userData[r][c] | 0;
-    if (giv > 0) { ctx.fillStyle = '#000'; ctx.fillText(String(giv), px, py); }
-    else if (usr > 0) {
-      const bad = ((s.checkData[r][c] | 0) === 1);
-      ctx.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
-      ctx.fillText(String(usr), px, py);
+      // 数字
+      ctx.font=FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+      for (let r=0;r<GRID;r++) for (let c=0;c<GRID;c++){
+        const px=s.x+c*CELL+CELL/2, py=s.y+r*CELL+CELL/2;
+        const giv=s.problemData[r][c]|0, usr=s.userData[r][c]|0;
+        if (giv>0){ ctx.fillStyle='#000'; ctx.fillText(String(giv),px,py); }
+        else if (usr>0){
+          const bad=((s.checkData[r][c]|0)===1);
+          ctx.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
+          ctx.fillText(String(usr),px,py);
+        }
+      }
+
+      // タグ
+      ctx.fillStyle = isActive ? '#2b90ff' : '#666';
+      ctx.fillRect(s.x, s.y-18, 30, 18);
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(s.id, s.x+15, s.y-9);
+
+      // 外枠は最後に一度だけ描画
+      ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
+      ctx.lineWidth   = isActive ? 3 : 1.5;
+      ctx.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
+
+      ctx.restore();
     }
-  }
 
-  // タグ（既存どおり）
-  ctx.fillStyle = isActive ? '#2b90ff' : '#666';
-  ctx.fillRect(s.x, s.y - 18, 30, 18);
-  ctx.fillStyle = '#fff';
-  ctx.font = '12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(s.id, s.x + 15, s.y - 9);
 
-  // 外枠は最後に一度だけ、整数座標で4辺を個別に描く（右/下の二度描きを防止）
-  ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
-  ctx.lineWidth   = isActive ? 3 : 1.5;
-  ctx.lineCap = 'butt';
-  ctx.lineJoin = 'miter';
-  const L = s.x, T = s.y, R = s.x + s.w, B = s.y + s.h;
-  ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(R, T); ctx.stroke();   // 上
-  ctx.beginPath(); ctx.moveTo(R, T); ctx.lineTo(R, B); ctx.stroke();   // 右
-  ctx.beginPath(); ctx.moveTo(R, B); ctx.lineTo(L, B); ctx.stroke();   // 下
-  ctx.beginPath(); ctx.moveTo(L, B); ctx.lineTo(L, T); ctx.stroke();   // 左
-
-  ctx.restore();
-}
-   
     // ===== ヒット判定 =====
     function boardAt(x,y){
       for (let i=squares.length-1;i>=0;i--){
