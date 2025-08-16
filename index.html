@@ -7,57 +7,69 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family:'Noto Sans JP',"Inter",sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; min-height:100vh; background:#f0f4f8; padding:1rem; box-sizing:border-box; }
-    .container { background:#fff; padding:1rem; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,.08); width:100%; max-width:1200px; display:flex; flex-direction:column; gap:.75rem; }
-    canvas { border:2px solid #e2e8f0; background:#fff; border-radius:8px; cursor:grab; touch-action:none; width:100%; height:auto; aspect-ratio:4/3; }
+    body {
+      font-family:'Noto Sans JP',"Inter",sans-serif;
+      display:flex; justify-content:center; align-items:flex-start;
+      min-height:100vh; background:#f0f4f8; padding:1rem; box-sizing:border-box;
+    }
+    .container {
+      background:#fff; padding:1rem; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.08);
+      width:100%; max-width:1200px; display:flex; flex-direction:column; gap:.75rem;
+    }
+    canvas {
+      border:2px solid #e2e8f0; background:#fff; border-radius:8px; cursor:grab; touch-action:none;
+      width:100%; height:auto; aspect-ratio:4/3;
+    }
     canvas:active { cursor:grabbing; }
-    button { background:#6366f1; color:#fff; padding:.5rem 1rem; border-radius:8px; font-weight:700; font-size:1rem; cursor:pointer; border:none; transition:.15s; box-shadow:0 4px 8px rgba(99,102,241,.25); }
-    button:hover:not(:disabled){ background:#4f46e5; transform:translateY(-1px); }
-    button:disabled{ background:#cbd5e1; cursor:not-allowed; box-shadow:none; transform:none; }
-    .danger{ background:#ef4444 !important; box-shadow:0 4px 8px rgba(239,68,68,.25); }
-    .secondary{ background:#10b981 !important; box-shadow:0 4px 8px rgba(16,185,129,.25); }
-    .tertiary{ background:#f59e0b !important; box-shadow:0 4px 8px rgba(245,158,11,.25); }
-    .info{ background:#3b82f6 !important; box-shadow:0 4px 8px rgba(59,130,246,.25); }
-    #status-container{ text-align:center; min-height:2.5rem; display:flex; flex-direction:column; justify-content:center; align-items:center; }
-    #status{ font-weight:600; color:#475569; min-height:1.5rem; }
+    button {
+      background:#6366f1; color:#fff; padding:.5rem 1rem; border-radius:8px; font-weight:600;
+      border:none; outline:none; transition:.15s; box-shadow:0 4px 8px rgba(99,102,241,.25);
+    }
+    button.secondary { background:#0ea5e9; box-shadow:0 4px 8px rgba(14,165,233,.25); }
+    button.danger { background:#ef4444; box-shadow:0 4px 8px rgba(239,68,68,.25); }
+    button:disabled { opacity:.55; cursor:not-allowed; box-shadow:none; }
+    select {
+      border:1px solid #e5e7eb; border-radius:8px; padding:.5rem .75rem; background:#fff;
+    }
+    #status-container {
+      display:flex; justify-content:center;
+    }
+    #status {
+      text-align:center; color:#475569; background:#f8fafc; border:1px solid #e2e8f0;
+      padding:.5rem .75rem; border-radius:8px; font-size:.95rem; width:100%;
+    }
+    .toolbar { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; justify-content:center; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1 class="text-2xl md:text-3xl font-bold text-center text-gray-800">合体ナンプレ 作成＆解答ツール</h1>
+    <h1 class="text-2xl font-extrabold text-slate-800 text-center">合体ナンプレ 作成＆解答ツール</h1>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 border-b border-gray-200 pb-3">
-      <div class="flex flex-col items-center p-3 rounded-lg bg-indigo-50/50 space-y-3 border border-indigo-200 justify-center">
-        <h2 class="text-xl font-semibold text-gray-700 text-center">編集モード</h2>
-        <div class="flex flex-wrap justify-center items-center gap-3">
-          <button id="addSquareButton">盤面を追加</button>
-          <button id="deleteButton" class="danger" disabled>選択中の盤面を削除</button>
-          <button id="clearAllBoardsButton" class="danger" disabled>すべて削除</button>
-          <select id="difficulty" class="border rounded px-3 py-2">
-            <option value="easy">かんたん</option>
-            <option value="normal" selected>ふつう</option>
-            <option value="hard">むずかしい</option>
-            <option value="expert">玄人</option>
-            <option value="extreme">鬼</option>
-          </select>
-          <button id="generateProblemButton" class="secondary" disabled>合体問題を作成</button>
-        </div>
-      </div>
-
-      <div class="flex flex-col items-center p-3 rounded-lg bg-teal-50/50 space-y-3 border border-teal-200 justify-center">
-        <h2 class="text-xl font-semibold text-gray-700 text-center">解答モード</h2>
-        <div class="flex flex-wrap justify-center gap-3">
-          <button id="checkButton" class="tertiary" disabled>矛盾チェック</button>
-          <button id="solveButton" class="tertiary" disabled>解答を表示</button>
-          <button id="exportTextButton" class="info" disabled>テキスト保存</button>
-          <button id="exportImageAllButton" class="info" disabled>画像保存（全体）</button>
-        </div>
+    <div class="toolbar">
+      <h2 class="text-xl font-semibold text-gray-700 text-center">編集モード</h2>
+      <div class="flex flex-wrap justify-center items-center gap-3">
+        <button id="addSquareButton">盤面を追加</button>
+        <button id="deleteButton" class="danger" disabled>選択中の盤面を削除</button>
+        <button id="clearAllBoardsButton" class="danger" disabled>すべて削除</button>
+        <select id="difficulty" class="border rounded px-3 py-2">
+          <option value="easy">かんたん</option>
+          <option value="normal" selected>ふつう</option>
+          <option value="hard">むずかしい</option>
+          <option value="expert">玄人</option>
+          <option value="extreme">鬼</option>
+        </select>
+        <button id="generateProblemButton" class="secondary" disabled>合体問題を作成</button>
+        <button id="checkButton" class="secondary" disabled>矛盾チェック</button>
+        <button id="solveButton" class="secondary" disabled>解答トグル</button>
+        <button id="exportTextButton" class="" disabled>JSON保存</button>
+        <button id="exportImageAllButton" class="" disabled>全体画像を保存(PNG)</button>
       </div>
     </div>
 
-    <div class="flex flex-wrap gap-2 items-center justify-center">
+    <div class="toolbar">
+      <h2 class="text-xl font-semibold text-gray-700 text-center">表示</h2>
       <button id="zoomOut">−</button>
       <button id="zoomIn">＋</button>
       <button id="zoom100">100%</button>
