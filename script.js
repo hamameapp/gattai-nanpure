@@ -1,6 +1,8 @@
 // script.js — Cloudflare Pages front-end（置き換え可）
-// - 画像保存：問題＋解答を1枚のPNG（上下2段、ラベル付き）で出力（タイムスタンプ名）
-// - パン：背景を左ドラッグでも掴めるように（Space/右/中ドラッグも可）
+// - 画像保存：問題と解答を「別々のPNG」に出力（タイムスタンプ付きファイル名）
+//   * gattai_problem_YYYYMMDD_HHMMSS.png
+//   * gattai_solution_YYYYMMDD_HHMMSS.png
+// - パン：背景左ドラッグ/Space/右/中ドラッグで滑らかに移動（前回どおり）
 // - そのほか既存機能は変更していません
 
 (() => {
@@ -239,7 +241,7 @@
         panning=true; panStart={mx,my,px:panX,py:panY}; return;
       }
 
-      // 背景を左ドラッグでもパン開始（←追加）
+      // 背景を左ドラッグでもパン開始（滑らかパン）
       const s = boardAt(xw,yw);
       if (!s && e.button===0){
         panning=true; panStart={mx,my,px:panX,py:panY};
@@ -390,98 +392,96 @@
       setStatus('JSON を保存しました');
     });
 
-    // === 画像保存：問題と解答を上下2段で1枚に ===
+    // === 画像保存：問題 と 解答 を「別ファイル」で保存 ===
     exportImageButton?.addEventListener('click', ()=>{
       if (squares.length===0){ alert('まず盤面を追加してください'); return; }
       const {minX,minY,maxX,maxY} = contentBounds();
 
-      // レイアウト計算
-      const pad = 20;              // 周囲マージン
-      const titleH = 32;           // 「問題」「解答」タイトル行
-      const gapV = 24;             // 問題段と解答段の間
-      const regionW = Math.ceil((maxX-minX) + pad*2);
-      const regionH = Math.ceil((maxY-minY) + pad*2);
-      const outW = regionW;
-      const outH = titleH + regionH + gapV + titleH + regionH;
-
-      // 高解像度出力
-      const scale = 2;
-      const off = document.createElement('canvas');
-      off.width = outW * scale; off.height = outH * scale;
-      const g = off.getContext('2d', { alpha:false });
-      g.setTransform(scale,0,0,scale,0,0);
-      g.fillStyle = '#fff'; g.fillRect(0,0,outW,outH);
-
-      // タイトル描画
-      const drawTitle = (text, x, y) => {
-        g.font = 'bold 18px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-        g.fillStyle = '#111827';
-        g.textAlign = 'left';
-        g.textBaseline = 'middle';
-        g.fillText(text, x, y);
-      };
+      const margin = 20;
+      const regionW = Math.ceil((maxX-minX) + margin*2);
+      const regionH = Math.ceil((maxY-minY) + margin*2);
+      const scale = 2; // 高解像度で出力
+      const baseX = margin - minX;
+      const baseY = margin - minY;
 
       // 1盤描画（problem/solution切替）
-      const drawOne = (s, ox, oy, mode /* 'problem' | 'solution' */)=>{
+      const drawOne = (gctx, s, ox, oy, mode /* 'problem' | 'solution' */)=>{
         // 外枠
-        g.strokeStyle = '#000'; g.lineWidth = 1.5;
-        g.strokeRect(ox+.5, oy+.5, s.w-1, s.h-1);
+        gctx.strokeStyle = '#000'; gctx.lineWidth = 1.5;
+        gctx.strokeRect(ox+.5, oy+.5, s.w-1, s.h-1);
 
         // 細グリッド
-        g.lineWidth=1; g.strokeStyle='#bbb';
+        gctx.lineWidth=1; gctx.strokeStyle='#bbb';
         for (let i=1;i<GRID;i++){
           const gx=ox+i*CELL, gy=oy+i*CELL;
-          g.beginPath(); g.moveTo(gx+.5, oy); g.lineTo(gx+.5, oy+s.h); g.stroke();
-          g.beginPath(); g.moveTo(ox, gy+.5); g.lineTo(ox+s.w, gy+.5); g.stroke();
+          gctx.beginPath(); gctx.moveTo(gx+.5, oy); gctx.lineTo(gx+.5, oy+s.h); gctx.stroke();
+          gctx.beginPath(); gctx.moveTo(ox, gy+.5); gctx.lineTo(ox+s.w, gy+.5); gctx.stroke();
         }
         // 太グリッド
-        g.lineWidth=2; g.strokeStyle='#000';
+        gctx.lineWidth=2; gctx.strokeStyle='#000';
         for (let i=0;i<=GRID;i+=3){
           const gx=ox+i*CELL+.5, gy=oy+i*CELL+.5;
-          g.beginPath(); g.moveTo(gx, oy); g.lineTo(gx, oy+s.h); g.stroke();
-          g.beginPath(); g.moveTo(ox, gy); g.lineTo(ox+s.w, gy); g.stroke();
+          gctx.beginPath(); gctx.moveTo(gx, oy); gctx.lineTo(gx, oy+s.h); gctx.stroke();
+          gctx.beginPath(); gctx.moveTo(ox, gy); gctx.lineTo(ox+s.w, gy); gctx.stroke();
         }
         // 数字
-        g.font = FONT; g.textAlign='center'; g.textBaseline='middle'; g.fillStyle='#000';
+        gctx.font = FONT; gctx.textAlign='center'; gctx.textBaseline='middle'; gctx.fillStyle='#000';
         const grid = (mode==='solution' ? s.solutionData : s.problemData) || [];
         for (let r=0;r<GRID;r++) for (let c=0;c<GRID;c++){
           const v = grid?.[r]?.[c] | 0;
           if (v>0){
             const px=ox+c*CELL+CELL/2, py=oy+r*CELL+CELL/2;
-            g.fillText(String(v), px, py);
+            gctx.fillText(String(v), px, py);
           }
         }
       };
 
-      // === 上段：問題 ===
-      drawTitle('問題', 8, Math.floor(titleH/2));
-      const baseX = pad - minX;
-      const baseY_problem = titleH + (pad - minY);
-      for (const s of squares){
-        drawOne(s, baseX + s.x, baseY_problem + s.y, 'problem');
-      }
+      // キャンバス作成 & 描画
+      const makeCanvas = (mode) => {
+        const off = document.createElement('canvas');
+        off.width = regionW * scale; off.height = regionH * scale;
+        const g = off.getContext('2d', { alpha:false });
+        g.setTransform(scale,0,0,scale,0,0);
+        g.fillStyle = '#fff'; g.fillRect(0,0,regionW,regionH);
+        for (const s of squares){
+          drawOne(g, s, baseX + s.x, baseY + s.y, mode);
+        }
+        return off;
+      };
 
-      // === 下段：解答 ===
-      const blockOffsetY = titleH + regionH + gapV;
-      drawTitle('解答', 8, blockOffsetY + Math.floor(titleH/2));
-      const baseY_solution = blockOffsetY + (pad - minY);
-      for (const s of squares){
-        drawOne(s, baseX + s.x, baseY_solution + s.y, 'solution');
-      }
-
-      // ファイル名（タイムスタンプ）
+      // タイムスタンプ付きファイル名
       const now = new Date();
       const pad2 = (n) => String(n).padStart(2, '0');
       const stamp = `${now.getFullYear()}${pad2(now.getMonth()+1)}${pad2(now.getDate())}_${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
-      const fileName = `gattai_all_${stamp}.png`;
+      const fnameProblem  = `gattai_problem_${stamp}.png`;
+      const fnameSolution = `gattai_solution_${stamp}.png`;
 
-      off.toBlob((blob)=>{
+      // 問題を保存
+      const cvP = makeCanvas('problem');
+      cvP.toBlob((blob)=>{
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = fileName; a.click();
+        const a = document.createElement('a'); a.href = url; a.download = fnameProblem; a.click();
         URL.revokeObjectURL(url);
       }, 'image/png');
 
-      setStatus(`PNG を保存しました（${fileName} / 問題＋解答）`);
+      // 解答が無い場合はスキップして通知
+      const hasSolution = squares.some(s =>
+        Array.isArray(s.solutionData) && s.solutionData.some(row => row.some(v => v))
+      );
+      if (!hasSolution){
+        setStatus(`PNG を保存しました（${fnameProblem}、解答データが無いため問題のみ）`);
+        return;
+      }
+
+      // 解答を保存
+      const cvS = makeCanvas('solution');
+      cvS.toBlob((blob)=>{
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = fnameSolution; a.click();
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+
+      setStatus(`PNG を保存しました（${fnameProblem} / ${fnameSolution}）`);
     });
 
     function updateButtonStates(){
