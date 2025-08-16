@@ -107,14 +107,16 @@
       if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
 
-    // ホイール：Ctrl/⌘+ホイール = ズーム、 それ以外 = パン（Shiftで横）
+    // ホイール：Ctrl/⌘+ホイール = ズーム、 Space押下中のみ = パン（Shiftで横）
     canvas.addEventListener('wheel', (e)=>{
       const rect = canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey){
+        // ズーム（ピンチ相当）
         e.preventDefault();
         const mx=e.clientX-rect.left, my=e.clientY-rect.top;
         setZoomAt(zoom * (1 + (-Math.sign(e.deltaY))*0.1), mx, my);
-      }else{
+      }else if (isSpaceDown){
+        // Space押下中のみパン（Shiftで横）
         e.preventDefault();
         if (e.shiftKey){
           panX -= e.deltaY;
@@ -122,6 +124,9 @@
           panX -= e.deltaX; panY -= e.deltaY;
         }
         applyTransform(); draw(); saveState();
+      }else{
+        // それ以外はページのスクロールを許可
+        return;
       }
     }, { passive:false });
 
@@ -241,10 +246,10 @@
         panning=true; panStart={mx,my,px:panX,py:panY}; return;
       }
 
-      // 背景を左ドラッグでもパン開始（滑らかパン）
+      // 左ドラッグのみではパン開始しない（Space/中/右のみに制限）
       const s = boardAt(xw,yw);
       if (!s && e.button===0){
-        panning=true; panStart={mx,my,px:panX,py:panY};
+        // 何もしない：背景での左ドラッグは無視（誤操作防止）
         activeSquareId=null; activeCell=null; draw(); updateButtonStates();
         return;
       }
@@ -789,7 +794,7 @@
       setStatus('盤を追加 →「合体問題を作成」。背景左ドラッグ/Space/右/中ドラッグでパン、Ctrl+ホイールでズーム。');
       applyTransform(); draw();
     }else{
-      setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位でスナップ）');
+      setStatus(isProblemGenerated ? '前回の問題を復元しました（続きからプレイできます）' : 'レイアウトを復元しました（縦は3セル単位でスナップ）');
       applyTransform(); draw();
     }
     updateButtonStates();
