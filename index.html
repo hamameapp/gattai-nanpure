@@ -59,16 +59,15 @@
     ]
   }
   </script>
-  <!-- Google AdSense H5 Games Ads (Ad Placement API) -->
+<!-- Google AdSense H5 Games Ads (Ad Placement API) - TEST MODE -->
   <script async
     data-adbreak-test="on"
     src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX"
     crossorigin="anonymous"></script>
   <script>
+    // setup
     window.adsbygoogle = window.adsbygoogle || [];
-    // adBreak / adConfig のショートハンド
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
-    // 任意設定（必要に応じて変更）
     window.adConfig({ sound: 'on' });
   </script>
 </head>
@@ -210,5 +209,43 @@
   </div>
 
   <script src="script.js"></script>
+<!-- 保存(PNG)クリック時にだけリワード広告を挟み、完了後に元の処理を実行 -->
+  <script>
+    (function(){
+      const btn = document.getElementById('exportImageAllButton');
+      if (!btn) return;
+      let skipOnce = false; // 広告表示後の再クリックで自分のフックを回避
+
+      btn.addEventListener('click', function(e){
+        if (skipOnce) { skipOnce = false; return; } // 元の処理を通す
+        // adBreak が使えない場合やユーザーが拒否した場合でも保存は続行する
+        if (typeof window.adBreak !== 'function') return; // そのまま本来の処理へ
+
+        // 任意視聴確認（ブロックしない設計）
+        const ok = confirm('広告を視聴しますか？（キャンセルしても保存は続行されます）');
+        if (!ok) return; // 視聴しない → 本来の処理へ
+
+        // ここで一度止めて、広告終了後に"もう一度"自動クリックして元の処理を実行
+        e.stopImmediatePropagation();
+        e.preventDefault();
+
+        let shown = false;
+        window.adBreak({
+          type: 'reward',
+          name: 'export-on-save',
+          beforeReward: function(show){ try{ shown = true; show && show(); }catch(_){} },
+          adViewed: function(){ proceed(); },
+          adDismissed: function(){ proceed(); },
+          beforeAd: function(){ /* 任意: ステータス表示など */ },
+          afterAd: function(){ if (!shown) proceed(); } // 何らかで出なかった時のフォールバック
+        });
+
+        function proceed(){
+          skipOnce = true;
+          btn.click(); // 元の保存処理を呼び出す（広告以外は一切変更無し）
+        }
+      }, true); // capture=true で先にフック
+    })();
+  </script>
 </body>
 </html>
