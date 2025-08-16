@@ -163,30 +163,14 @@
       }
     }
 
-    
-    // --- helper: crisp outer rectangle stroke (odd/even width-friendly) ---
-    function strokeRectCrisp(ctx, x, y, w, h, lineWidth, color) {
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth   = lineWidth;
-      ctx.lineCap = 'butt';
-      ctx.lineJoin = 'miter';
-      const needsHalf = (Math.round(lineWidth) % 2 === 1);
-      const off = needsHalf ? 0.5 : 0;
-      const L = x + off, T = y + off, R = x + w - off, B = y + h - off;
-      ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(R, T); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(R, T); ctx.lineTo(R, B); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(R, B); ctx.lineTo(L, B); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(L, B); ctx.lineTo(L, T); ctx.stroke();
-      ctx.restore();
-    }
-function drawBoard(s){
+    function drawBoard(s){
       ctx.save();
       const isActive = String(s.id) === String(activeSquareId);
 
-      // 外枠（均一ピクセルの安全描画）
-      strokeRectCrisp(ctx, s.x, s.y, s.w, s.h,
-        (isActive ? 3 : 1.5), (isActive ? '#2b90ff' : '#222'));
+      // 外枠
+      ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
+      ctx.lineWidth   = isActive ? 3 : 1.5;
+      ctx.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
 
       // 細グリッド
       ctx.lineWidth=1; ctx.strokeStyle='#aaa';
@@ -420,11 +404,27 @@ function drawBoard(s){
       const baseX = margin - minX;
       const baseY = margin - minY;
 
-      // 1盤描画（problem/solution切替）
+      
+      // 書き出し用の外枠ストローク（端の太りを防ぐ）
+      const strokeRectCrisp = (gctx, x, y, w, h, lineWidth, color) => {
+        gctx.save();
+        gctx.strokeStyle = color;
+        gctx.lineWidth   = lineWidth;
+        gctx.lineCap = 'butt';
+        gctx.lineJoin = 'miter';
+        const needsHalf = (Math.round(lineWidth) % 2 === 1);
+        const off = needsHalf ? 0.5 : 0;
+        const L = x + off, T = y + off, R = x + w - off, B = y + h - off;
+        gctx.beginPath(); gctx.moveTo(L, T); gctx.lineTo(R, T); gctx.stroke();
+        gctx.beginPath(); gctx.moveTo(R, T); gctx.lineTo(R, B); gctx.stroke();
+        gctx.beginPath(); gctx.moveTo(R, B); gctx.lineTo(L, B); gctx.stroke();
+        gctx.beginPath(); gctx.moveTo(L, B); gctx.lineTo(L, T); gctx.stroke();
+        gctx.restore();
+      };
+// 1盤描画（problem/solution切替）
       const drawOne = (gctx, s, ox, oy, mode /* 'problem' | 'solution' */)=>{
-        // 外枠
-        gctx.strokeStyle = '#000'; gctx.lineWidth = 1.5;
-        gctx.strokeRect(ox+.5, oy+.5, s.w-1, s.h-1);
+        // 外枠（PNGのみ均一化）
+        strokeRectCrisp(gctx, ox, oy, s.w, s.h, 2, '#000');
 
         // 細グリッド
         gctx.lineWidth=1; gctx.strokeStyle='#bbb';
@@ -435,8 +435,8 @@ function drawBoard(s){
         }
         // 太グリッド
         gctx.lineWidth=2; gctx.strokeStyle='#000';
-        for (let i=0;i<=GRID;i+=3){
-          const gx=ox+i*CELL+.5, gy=oy+i*CELL+.5;
+        for (let i=3;i<GRID;i+=3){
+          const gx=ox+i*CELL, gy=oy+i*CELL;
           gctx.beginPath(); gctx.moveTo(gx, oy); gctx.lineTo(gx, oy+s.h); gctx.stroke();
           gctx.beginPath(); gctx.moveTo(ox, gy); gctx.lineTo(ox+s.w, gy); gctx.stroke();
         }
