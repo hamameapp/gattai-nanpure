@@ -164,9 +164,29 @@
     }
 
     
+    // --- helper: crisp outer rectangle stroke (odd/even width-friendly) ---
+    function strokeRectCrisp(ctx, x, y, w, h, lineWidth, color) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = lineWidth;
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'miter';
+      const needsHalf = (Math.round(lineWidth) % 2 === 1);
+      const off = needsHalf ? 0.5 : 0;
+      const L = x + off, T = y + off, R = x + w - off, B = y + h - off;
+      ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(R, T); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(R, T); ctx.lineTo(R, B); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(R, B); ctx.lineTo(L, B); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(L, B); ctx.lineTo(L, T); ctx.stroke();
+      ctx.restore();
+    }
 function drawBoard(s){
       ctx.save();
       const isActive = String(s.id) === String(activeSquareId);
+
+      // 外枠（均一ピクセルの安全描画）
+      strokeRectCrisp(ctx, s.x, s.y, s.w, s.h,
+        (isActive ? 3 : 1.5), (isActive ? '#2b90ff' : '#222'));
 
       // 細グリッド
       ctx.lineWidth=1; ctx.strokeStyle='#aaa';
@@ -176,11 +196,10 @@ function drawBoard(s){
         ctx.beginPath(); ctx.moveTo(s.x,  gy+.5);   ctx.lineTo(s.x+s.w, gy+.5); ctx.stroke();
       }
 
-      // 太線（3x3）— 2px 線は整数座標、右端/下端は描かない
+      // 太線（3x3）
       ctx.lineWidth=2; ctx.strokeStyle='#333';
-      ctx.lineCap='butt'; ctx.lineJoin='miter';
-      for (let i=3;i<GRID;i+=3){
-        const gx=s.x+i*CELL, gy=s.y+i*CELL;
+      for (let i=0;i<=GRID;i+=3){
+        const gx=s.x+i*CELL+.5, gy=s.y+i*CELL+.5;
         ctx.beginPath(); ctx.moveTo(gx, s.y);      ctx.lineTo(gx, s.y+s.h); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(s.x, gy);      ctx.lineTo(s.x+s.w, gy); ctx.stroke();
       }
@@ -206,14 +225,8 @@ function drawBoard(s){
       ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(s.id, s.x+15, s.y-9);
 
-      // 外枠は最後に一度だけ描画
-      ctx.strokeStyle = isActive ? '#2b90ff' : '#222';
-      ctx.lineWidth   = isActive ? 3 : 1.5;
-      ctx.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
-
       ctx.restore();
     }
-
 
     // ===== ヒット判定 =====
     function boardAt(x,y){
