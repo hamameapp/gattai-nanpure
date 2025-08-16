@@ -62,8 +62,8 @@
 <!-- Google AdSense loader (once only) -->
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous"></script>
   <script>
-    // H5 Games Ads helpers (Ad Placement API)
     window.adsbygoogle = window.adsbygoogle || [];
+    // H5 Games Ads short-hands
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
     try{ adConfig({ sound: 'on' }); }catch(e){}
   </script>
@@ -123,16 +123,6 @@
         </ul>
       </div>
     </details>
-<!-- === Ad: In-article (inside Help) === -->
-<article class="adbox my-4" style="min-height:200px">
-  <ins class="adsbygoogle"
-       style="display:block;text-align:center"
-       data-ad-layout="in-article"
-       data-ad-format="fluid"
-       data-ad-client="ca-pub-1460224105367515"
-       data-ad-slot="2862175826"></ins>
-</article>
-<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
     <!-- ステータス + キャンバス -->
     <div id="status-container" class="mb-2 text-center text-slate-700 min-h-6">
@@ -225,8 +215,18 @@
     -->
   </div>
 
-  <!-- === Ad: Multiplex (before footer) === -->
-<div class="adbox my-6" style="min-height:320px">
+  <!-- === Ad: In-article (Bottom area) === -->
+<article class="adbox my-6" style="min-height:220px">
+  <ins class="adsbygoogle"
+       style="display:block;text-align:center"
+       data-ad-layout="in-article"
+       data-ad-format="fluid"
+       data-ad-client="ca-pub-1460224105367515"
+       data-ad-slot="2862175826"></ins>
+</article>
+<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
+<!-- === Ad: Multiplex (Bottom area) === -->
+<div class="adbox my-8" style="min-height:320px">
   <ins class="adsbygoogle"
        style="display:block"
        data-ad-format="autorelaxed"
@@ -236,5 +236,32 @@
 <script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
 <script src="script.js"></script>
+<!-- === Hooks: Show reward ad before saving (PNG/JSON) === -->
+<script>
+(function(){
+  function hookReward(buttonId){
+    var btn = document.getElementById(buttonId);
+    if (!btn) return;
+    var reentrant = false;
+    btn.addEventListener('click', function(ev){
+      if (reentrant || typeof window.adBreak !== 'function') return; // let original handler run
+      ev.stopImmediatePropagation();
+      ev.preventDefault();
+      window.adBreak({
+        type: 'reward',
+        name: 'save-' + buttonId,
+        beforeReward: function(showAdFn){ try{ showAdFn && showAdFn(); }catch(e){} },
+        adViewed: function(){ reentrant = true; btn.click(); reentrant = false; },
+        adDismissed: function(){ reentrant = true; btn.click(); reentrant = false; },
+        beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){ } },
+        afterAd: function(){}
+      });
+    }, { capture: true });
+  }
+  // PNG保存/JSON保存の両方にフック
+  hookReward('exportImageAllButton');
+  hookReward('exportTextButton');
+})();
+</script>
 </body>
 </html>
