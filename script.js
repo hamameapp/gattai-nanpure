@@ -44,7 +44,7 @@
     const checkButton           = byId('checkButton');
     const solveButton           = byId('solveButton');
     const exportTextButton      = byId('exportTextButton');
-    const exportImageButton     = byId('exportImageButton');   // 全体画像保存（存在すれば使う）
+    const exportImageButton     = byId('exportImageAllButton') || byId('exportImageButton');   // ★画像保存ボタンIDを両対応
     const difficultySel         = byId('difficulty');
 
     // ズームUI（存在すれば使う）
