@@ -61,7 +61,7 @@
   </script>
 
   <!-- Google AdSense H5 Games Ads (Ad Placement API) -->
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous" data-adbreak-test="on"></script>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous"></script>
   <script>
     window.adsbygoogle = window.adsbygoogle || [];
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
@@ -207,75 +207,94 @@
 
   <script src="script.js"></script>
 
-<!-- H5 Rewarded Ad for High-Res Export (2x/4x), with logs -->
+<!-- === High-Res Choice Modal (1x/2x/4x) === -->
+<div id="hires-modal-backdrop" style="
+  position:fixed; inset:0; background:rgba(0,0,0,.35);
+  display:none; align-items:center; justify-content:center; z-index:9999;">
+  <div role="dialog" aria-modal="true" style="
+    background:#fff; color:#111; width:min(92vw,480px); border-radius:14px;
+    box-shadow:0 10px 30px rgba(0,0,0,.25);">
+    <div style="padding:16px 20px; border-bottom:1px solid #eee; font-weight:600;">保存解像度を選択</div>
+    <div style="padding:16px 20px;">
+      <p style="margin:0 0 12px 0; line-height:1.5;">2x / 4x は広告視聴後に保存します（任意視聴）。スキップ時は 1x 保存になります。</p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <button data-scale="1" class="hr-btn" style="flex:1 1 100px; padding:10px 12px; border-radius:10px; border:1px solid #ddd; background:#f8f8f8; cursor:pointer;">1x（標準/広告なし）</button>
+        <button data-scale="2" class="hr-btn" style="flex:1 1 100px; padding:10px 12px; border-radius:10px; border:1px solid #0a7; background:#0a7; color:#fff; cursor:pointer;">2x（広告視聴）</button>
+        <button data-scale="4" class="hr-btn" style="flex:1 1 100px; padding:10px 12px; border-radius:10px; border:1px solid #095; background:#095; color:#fff; cursor:pointer;">4x（広告視聴）</button>
+      </div>
+    </div>
+    <div style="padding:12px 20px; border-top:1px solid #eee; display:flex; justify-content:flex-end; gap:8px;">
+      <button id="hires-cancel" style="padding:8px 12px; border:1px solid #ddd; background:#fff; border-radius:10px; cursor:pointer;">キャンセル</button>
+    </div>
+  </div>
+</div>
+<style>
+  #hires-modal-backdrop .hr-btn:active { transform: translateY(1px); }
+</style>
+
+<!-- === Hooks: Rewarded Ad + High-Res Selection (PNG save) === -->
 <script>
 (function(){
+  function $(sel){ return document.querySelector(sel); }
+  function showHiresDialog(onPick){
+    var bd = $('#hires-modal-backdrop');
+    if (!bd) return onPick(1);
+    bd.style.display = 'flex';
+    var done = false;
+    function close(){ if(!bd) return; bd.style.display='none'; bd.removeEventListener('click', outside); }
+    function outside(e){ if(e.target===bd){ close(); } }
+    bd.addEventListener('click', outside);
+    bd.querySelectorAll('.hr-btn').forEach(function(btn){
+      btn.onclick = function(){
+        if (done) return;
+        done = true;
+        var scale = parseInt(btn.getAttribute('data-scale'),10)||1;
+        close();
+        onPick(scale);
+      };
+    });
+    var cancel = $('#hires-cancel');
+    if (cancel) cancel.onclick = function(){ close(); onPick(1); };
+  }
+
   function attachPngHookById(id){
     var btn = document.getElementById(id);
     if (!btn) return;
     var reentrant = false;
     btn.addEventListener('click', function(ev){
-      if (reentrant){ console.log('[rvw]', id, 'reentrant skip'); return; }
-      if (typeof window.adBreak !== 'function'){ console.warn('[rvw]', id, 'adBreak undefined -> passthrough'); return; }
-
+      if (reentrant) return;
       ev.stopImmediatePropagation();
       ev.preventDefault();
 
-      var input = window.prompt('保存解像度を選択してください:\n1=標準(1x) / 2=高精細(2x) / 4=超高精細(4x)\n※2/4は広告視聴後に保存します。', '2');
-      var s = parseInt((input||'').trim(),10);
-      var proceed = function(){ reentrant = true; btn.click(); reentrant = false; setTimeout(function(){ window.__EXPORT_SCALE__ = null; }, 3000); };
-
-      if (s===2 || s===4){
-        window.__EXPORT_SCALE__ = s;
-        console.log('[rvw]', id, 'request reward', s+'x');
+      showHiresDialog(function(scale){
+        // If ad library missing or 1x chosen -> save directly
+        function proceed(withScale){
+          window.__EXPORT_SCALE__ = withScale;
+          reentrant = true; btn.click(); reentrant = false;
+          setTimeout(function(){ window.__EXPORT_SCALE__ = null; }, 3000);
+        }
+        if (scale === 1 || typeof window.adBreak !== 'function'){
+          proceed(1);
+          return;
+        }
+        // Rewarded flow for 2x/4x
+        window.__EXPORT_SCALE__ = scale;
         window.adBreak({
           type: 'reward',
-          name: 'export-hires-' + s + 'x',
-          beforeReward: function(showAd){ try{ console.log('[rvw]', id, 'beforeReward'); showAd && showAd(); }catch(e){ console.warn('[rvw] showAd error', e); } },
-          adViewed: function(){ console.log('[rvw]', id, 'adViewed'); proceed(); },
-          adDismissed: function(){ console.log('[rvw]', id, 'adDismissed'); window.__EXPORT_SCALE__ = 1; proceed(); },
+          name: 'export-hires-' + scale + 'x',
+          beforeReward: function(showAd){ try{ showAd && showAd(); }catch(e){} },
+          adViewed: function(){ proceed(scale); },
+          adDismissed: function(){ proceed(1); }, // スキップでも1xで保存
           beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){ } },
-          afterAd: function(){ console.log('[rvw]', id, 'afterAd'); }
+          afterAd: function(){}
         });
-      } else {
-        window.__EXPORT_SCALE__ = 1;
-        console.log('[rvw]', id, 'no reward, scale=1x');
-        proceed();
-      }
-    }, { capture: true });
-  }
-
-  function attachJsonHook(id){
-    var btn = document.getElementById(id);
-    if (!btn) return;
-    var reentrant = false;
-    btn.addEventListener('click', function(ev){
-      if (reentrant || typeof window.adBreak !== 'function'){ return; }
-      var ok = window.confirm('JSON保存前に広告を視聴しますか？（キャンセルで広告なし保存）');
-      if (!ok) return;
-      ev.stopImmediatePropagation();
-      ev.preventDefault();
-      var proceed = function(){ reentrant = true; btn.click(); reentrant = false; };
-      window.adBreak({
-        type: 'reward',
-        name: 'export-json',
-        beforeReward: function(showAd){ try{ showAd && showAd(); }catch(e){} },
-        adViewed: proceed,
-        adDismissed: proceed,
-        beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){ } },
-        afterAd: function(){}
       });
     }, { capture: true });
   }
 
-  // PNG保存のボタンIDが実装により異なる可能性があるため、両方に付与
+  // Attach to likely PNG button IDs
   attachPngHookById('exportImageAllButton');
-  attachPngHookById('exportImageButton'); // 予備
-
-  // JSON保存
-  attachJsonHook('exportTextButton');
-
-  console.log('[rvw] hooks attached');
+  attachPngHookById('exportImageButton');
 })();
 </script>
 </body>
