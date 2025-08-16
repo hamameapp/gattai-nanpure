@@ -1,39 +1,42 @@
-// script.js — Cloudflare Pages フロント
-// ・マウスホイールでズーム（カーソル中心）、ドラッグでパン/盤面移動
-// ・「画像保存（全体）」= オフスクリーンに高解像度描画（ラベル非表示）
-// ・矛盾チェック（行/列/箱/共有）/ 解答トグル / JSONエクスポート / すべて削除
-// ・生成はサーバAPI（/api/generate, overlapEmpty=true）を呼ぶ
+// script.js — Cloudflare Pages フロント（置き換え可）
+//
+// ・サーバ生成(/api/generate overlapEmpty:true)
+// ・ズーム（ホイールでカーソル中心 / ボタン / + − キー）、パン（掴んで移動 / 右中ボタン / Space）
+// ・盤追加は「今見ている中心」に生成、Yは3セル単位でスナップ
+// ・矛盾チェック（行 / 列 / 箱 / 共有）と解答トグル
+// ・エクスポート(JSON / 全体PNG：ラベル非表示)
+// ・保存キー: v4
 
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
     // ===== DOM =====
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
-    const statusDiv = document.getElementById('status');
 
+    const statusDiv = document.getElementById('status');
     const addSquareButton = byId('addSquareButton');
     const deleteButton = byId('deleteButton');
     const clearAllBoardsButton = byId('clearAllBoardsButton');
     const generateProblemButton = byId('generateProblemButton');
-    const checkButton = byId('checkButton');
-    const solveButton = byId('solveButton');
-    const exportTextButton = byId('exportTextButton');
-    const saveAllPngButton = byId('saveAllPngButton');
+    const checkButton = byId('checkButton');     // 矛盾チェック
+    const solveButton = byId('solveButton');     // 解答トグル
+    const exportTextButton = byId('exportTextButton');   // JSON保存
+    const saveAllPngButton = byId('saveAllPngButton');   // 全体PNG保存
     const difficultySel = document.getElementById('difficulty');
 
     // ズームUI
     const zoomOutBtn = byId('zoomOut');
-    const zoomInBtn  = byId('zoomIn');
+    const zoomInBtn = byId('zoomIn');
     const zoomFitBtn = byId('zoomFit');
     const zoom100Btn = byId('zoom100');
-    const zoomPct    = byId('zoomPct');
+    const zoomPct = byId('zoomPct');
 
     // ===== 定数 =====
     const GRID = 9;
     const CELL = 30;
     const BOARD_PIX = GRID * CELL;
     const SNAP_X = CELL;
-    const SNAP_Y = CELL * 3;
+    const SNAP_Y = CELL * 3; // ★Yは3セル
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
     const MIN_ZOOM = 0.1, MAX_ZOOM = 2.0, ZOOM_STEP = 0.1;
     const LS_KEY = 'gattai_state_v4';
@@ -43,11 +46,8 @@
     let isProblemGenerated = false;
     let activeSquareId = null;
     let activeCell = null;
-
-    let draggingBoard = null;   // {id, offsetX, offsetY}
-    let panning = false;        // 右/中ドラッグ or 背景左ドラッグ
-    let panStart = null;        // {mx,my,px,py}
-
+    let drag = null; // 盤移動
+    let panning = false, isSpaceDown = false, panStart = null; // ビュー移動
     let zoom = 1.0, panX = 0, panY = 0;
     let devicePR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     let showSolution = false;
@@ -55,24 +55,36 @@
     // ===== Utils =====
     function byId(id){ return document.getElementById(id) || null; }
     const clamp = (v,lo,hi)=>Math.max(lo,Math.min(hi,v));
-    const snap  = (v,u)=>Math.round(v/u)*u;
+    const snap = (v,u)=>Math.round(v/u)*u;
     const createEmptyGrid = ()=>Array.from({length:GRID},()=>Array(GRID).fill(0));
     const cloneGrid = g=>g.map(r=>r.slice());
     function nextId(){ let m=0; for(const s of squares) m=Math.max(m, +s.id||0); return String(m+1); }
-    const setStatus = msg => { if (statusDiv) statusDiv.textContent = msg; };
 
+    function newSquareAtWorldCenter(){
+      const rect = canvas.getBoundingClientRect();
+      const cx = rect.width / 2, cy = rect.height / 2;
+      const world = toWorld(cx, cy);
+      const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
+      const ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
+      const id = nextId();
+      return { id, x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
+        problemData:createEmptyGrid(), userData:createEmptyGrid(),
+        checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
+    }
+
+    const setStatus = msg => { if (statusDiv) statusDiv.textContent = msg; };
     function updateButtonStates(){
       zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
       generateProblemButton && (generateProblemButton.disabled = squares.length === 0);
       deleteButton && (deleteButton.disabled = activeSquareId == null);
       clearAllBoardsButton && (clearAllBoardsButton.disabled = squares.length === 0);
-      checkButton && (checkButton.disabled = !isProblemGenerated || showSolution);
+      checkButton && (checkButton.disabled = squares.length === 0 || !isProblemGenerated || showSolution);
       exportTextButton && (exportTextButton.disabled = squares.length === 0);
       saveAllPngButton && (saveAllPngButton.disabled = squares.length === 0);
       if (solveButton) { solveButton.disabled = !isProblemGenerated; solveButton.textContent = showSolution ? '解答を隠す' : '解答を表示'; }
     }
 
-    // ===== ビューポート =====
+    // ===== ビューポート（ズーム/パン）=====
     function applyTransform(){ ctx.setTransform(devicePR*zoom,0,0,devicePR*zoom, devicePR*panX, devicePR*panY); }
     function toWorld(mx,my){ return { x:(mx-panX)/zoom, y:(my-panY)/zoom }; }
 
@@ -88,7 +100,6 @@
       const rect=canvas.getBoundingClientRect();
       setZoomAt(z, rect.width/2, rect.height/2);
     }
-
     function contentBounds(){
       if (squares.length===0) return {minX:0,minY:0,maxX:BOARD_PIX,maxY:BOARD_PIX};
       let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
@@ -103,144 +114,149 @@
       panX=(rect.width - sw)/2 - minX*z; panY=(rect.height - sh)/2 - minY*z;
       applyTransform(); draw(); updateButtonStates(); saveState();
     }
-
-    // ===== 盤面 =====
-    function newSquareAtWorldCenter(){
-      const rect = canvas.getBoundingClientRect();
-      const cx = rect.width / 2, cy = rect.height / 2;
-      const world = toWorld(cx, cy);
-      const nx = Math.max(0, snap(world.x - BOARD_PIX/2, SNAP_X));
-      const ny = Math.max(0, snap(world.y - BOARD_PIX/2, SNAP_Y));
-      const id = nextId();
-      return { id, x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
-        problemData:createEmptyGrid(), userData:createEmptyGrid(),
-        checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
+    function autoFitIfOverflow(){
+      const rect=canvas.getBoundingClientRect();
+      const {minX,minY,maxX,maxY}=contentBounds();
+      const w=(maxX-minX), h=(maxY-minY);
+      if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
+
+    // ズームUI
+    zoomOutBtn?.addEventListener('click',()=>setZoom(zoom-ZOOM_STEP));
+    zoomInBtn?.addEventListener('click',()=>setZoom(zoom+ZOOM_STEP));
+    zoom100Btn?.addEventListener('click',()=>setZoom(1));
+    zoomFitBtn?.addEventListener('click',fitZoom);
+
+    // ホイール：ズーム（トラックパッドのピンチは ctrlKey=true で来る）
+    canvas.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      const rect=canvas.getBoundingClientRect();
+      const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+      const delta = -Math.sign(e.deltaY); // 下スクロールで縮小
+      const factor = 1 + delta * 0.1;
+      setZoomAt(zoom * factor, mx, my);
+    }, { passive:false });
 
     // ===== 描画 =====
     function draw(){
-      // 背景
       ctx.save(); ctx.setTransform(devicePR,0,0,devicePR,0,0); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore();
       applyTransform();
-      for (const s of squares) drawBoardTo(ctx, s, { hideId:false });
+      for (const s of squares) drawBoard(s, { showLabel:true });
       if (activeCell){
         const s=squares.find(x=>String(x.id)===String(activeCell.id));
         if (s){ ctx.save(); ctx.globalAlpha=.25; ctx.fillStyle='#66aaff';
           const x=s.x+activeCell.c*CELL, y=s.y+activeCell.r*CELL; ctx.fillRect(x,y,CELL,CELL); ctx.restore(); }
       }
     }
-
-    function drawBoardTo(g, s, { hideId }){
-      g.save();
+    function drawBoard(s, opt={showLabel:true}){
+      ctx.save();
       const isActive=String(s.id)===String(activeSquareId);
-      g.strokeStyle=isActive?'#2b90ff':'#222'; g.lineWidth=isActive?3:1.5;
-      g.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
+      ctx.strokeStyle=isActive?'#2b90ff':'#222'; ctx.lineWidth=isActive?3:1.5;
+      ctx.strokeRect(s.x-.5, s.y-.5, s.w+1, s.h+1);
 
-      // 細線
-      g.lineWidth=1; g.strokeStyle='#aaa';
+      // 細グリッド
+      ctx.lineWidth=1; ctx.strokeStyle='#aaa';
       for(let i=1;i<GRID;i++){
         const gx=s.x+i*CELL, gy=s.y+i*CELL;
-        g.beginPath(); g.moveTo(gx+.5,s.y); g.lineTo(gx+.5,s.y+s.h); g.stroke();
-        g.beginPath(); g.moveTo(s.x,gy+.5); g.lineTo(s.x+s.w,gy+.5); g.stroke();
+        ctx.beginPath(); ctx.moveTo(gx+.5,s.y); ctx.lineTo(gx+.5,s.y+s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x,gy+.5); ctx.lineTo(s.x+s.w,gy+.5); ctx.stroke();
       }
-      // 太線（箱）
-      g.lineWidth=2; g.strokeStyle='#333';
+      // 太線（3x3）
+      ctx.lineWidth=2; ctx.strokeStyle='#333';
       for(let i=0;i<=GRID;i+=3){
         const gx=s.x+i*CELL+.5, gy=s.y+i*CELL+.5;
-        g.beginPath(); g.moveTo(gx,s.y); g.lineTo(gx,s.y+s.h); g.stroke();
-        g.beginPath(); g.moveTo(s.x,gy); g.lineTo(s.x+s.w,gy); g.stroke();
+        ctx.beginPath(); ctx.moveTo(gx,s.y); ctx.lineTo(gx,s.y+s.h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x,gy); ctx.lineTo(s.x+s.w,gy); ctx.stroke();
       }
 
       // 数字
-      g.font=FONT; g.textAlign='center'; g.textBaseline='middle';
+      ctx.font=FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
       for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
         const px=s.x+c*CELL+CELL/2, py=s.y+r*CELL+CELL/2;
         const giv=s.problemData[r][c]|0, usr=s.userData[r][c]|0;
-        if (giv>0){ g.fillStyle='#000'; g.fillText(String(giv),px,py); }
+        if (giv>0){ ctx.fillStyle='#000'; ctx.fillText(String(giv),px,py); }
         else if (usr>0){ const bad=((s.checkData[r][c]|0)===1);
-          g.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
-          g.fillText(String(usr),px,py);
+          ctx.fillStyle = bad ? '#d11' : (showSolution ? '#0a0' : '#2b90ff');
+          ctx.fillText(String(usr),px,py);
         }
       }
 
-      // 盤面ラベル（画像保存時は非表示）
-      if (!hideId){
-        g.fillStyle=isActive?'#2b90ff':'#666';
-        g.fillRect(s.x, s.y-18, 30, 18);
-        g.fillStyle='#fff'; g.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-        g.fillText(s.id, s.x+15, s.y-9);
+      // 盤IDラベル（保存PNGでは描かない）
+      if (opt.showLabel){
+        ctx.fillStyle=isActive?'#2b90ff':'#666';
+        ctx.fillRect(s.x, s.y-18, 30, 18);
+        ctx.fillStyle='#fff'; ctx.font='12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+        ctx.fillText(s.id, s.x+15, s.y-9);
       }
-      g.restore();
+
+      ctx.restore();
     }
-
-    // ===== 入力 =====
-    canvas.addEventListener('contextmenu', e=>e.preventDefault());
-
-    canvas.addEventListener('mousedown',(e)=>{
-      const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-      const {x:xw,y:yw}=toWorld(mx,my);
-
-      const isPanButton = (e.button===1 || e.button===2);
-      const hit = boardAt(xw,yw);
-
-      if (isPanButton || !hit){
-        // パン開始（背景 or 右/中クリック）
-        panning=true; panStart={mx,my,px:panX,py:panY}; draggingBoard=null;
-        return;
-      }
-
-      // 盤面ドラッグ
-      activeSquareId=hit.id; activeCell=cellAt(hit,xw,yw);
-      draggingBoard={ id:hit.id, offsetX:xw-hit.x, offsetY:yw-hit.y };
-      updateButtonStates(); draw();
-    });
-
-    canvas.addEventListener('mousemove',(e)=>{
-      const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-
-      if (panning && panStart){ panX=panStart.px+(mx-panStart.mx); panY=panStart.py+(my-panStart.my); applyTransform(); draw(); return; }
-      if(!draggingBoard) return;
-
-      const {x:xw,y:yw}=toWorld(mx,my); const s=squares.find(x=>String(x.id)===String(draggingBoard.id)); if(!s) return;
-      let nx=snap(xw-draggingBoard.offsetX,SNAP_X), ny=snap(yw-draggingBoard.offsetY,SNAP_Y);
-      nx=Math.max(0,nx); ny=Math.max(0,ny); s.x=nx; s.y=ny; draw();
-    });
-
-    window.addEventListener('mouseup',()=>{ panning=false; panStart=null; draggingBoard=null; saveState(); });
-
-    // 入力（数値/移動/ショートカット）
-    window.addEventListener('keydown',(e)=>{
-      if (e.key.toLowerCase()==='c'){ e.preventDefault(); checkAllAndReport(); return; }
-      if (!isProblemGenerated || !activeCell || showSolution) return;
-      const s=squares.find(x=>String(x.id)===String(activeCell.id)); if(!s) return;
-      if (s.problemData[activeCell.r][activeCell.c] > 0) return;
-
-      if (e.key>='1'&&e.key<='9'){ s.userData[activeCell.r][activeCell.c]=parseInt(e.key,10); s.checkData[activeCell.r][activeCell.c]=0; draw(); e.preventDefault(); saveState(); return; }
-      if (e.key==='Backspace'||e.key==='Delete'||e.key==='0'){ s.userData[activeCell.r][activeCell.c]=0; s.checkData[activeCell.r][activeCell.c]=0; draw(); e.preventDefault(); saveState(); return; }
-      const mv={ArrowUp:[-1,0],ArrowDown:[1,0],ArrowLeft:[0,-1],ArrowRight:[0,1]}[e.key];
-      if (mv){ const nr=clamp(activeCell.r+mv[0],0,GRID-1), nc=clamp(activeCell.c+mv[1],0,GRID-1); activeCell={ id:activeCell.id, r:nr, c:nc }; draw(); e.preventDefault(); }
-    });
-
-    // ホイール＝ズーム（カーソル中心）
-    canvas.addEventListener('wheel', (e)=>{
-      e.preventDefault();
-      const rect=canvas.getBoundingClientRect();
-      const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-      const dir = -Math.sign(e.deltaY);
-      setZoomAt(zoom * (1 + dir*0.1), mx, my);
-    }, { passive:false });
 
     // ===== ヒット判定 =====
     const boardAt=(x,y)=>{ for(let i=squares.length-1;i>=0;i--){ const s=squares[i]; if(x>=s.x&&x<s.x+s.w&&y>=s.y&&y<s.y+s.h) return s; } return null; };
     const cellAt=(s,x,y)=>{ if(!s) return null; const cx=Math.floor((x-s.x)/CELL), cy=Math.floor((y-s.y)/CELL);
       if(cx<0||cy<0||cx>=GRID||cy>=GRID) return null; return { id:s.id, r:cy, c:cx }; };
 
+    // ===== 入力（ドラッグ/パン）=====
+    canvas.addEventListener('contextmenu', e=>e.preventDefault());
+    canvas.addEventListener('mousedown',(e)=>{
+      const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+      const {x:xw,y:yw}=toWorld(mx,my);
+
+      // ビューを掴む（Space / 中 / 右）
+      if (isSpaceDown || e.button===1 || e.button===2){
+        panning=true; panStart={mx,my,px:panX,py:panY}; return;
+      }
+
+      // 盤を選択/移動
+      const s=boardAt(xw,yw);
+      if(!s){ activeSquareId=null; activeCell=null; draw(); updateButtonStates(); return; }
+      activeSquareId=s.id; activeCell=cellAt(s,xw,yw);
+      drag={ id:s.id, offsetX:xw-s.x, offsetY:yw-s.y }; updateButtonStates(); draw();
+    });
+    canvas.addEventListener('mousemove',(e)=>{
+      const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+
+      // パン
+      if (panning && panStart){
+        panX=panStart.px+(mx-panStart.mx);
+        panY=panStart.py+(my-panStart.my);
+        applyTransform(); draw(); return;
+      }
+
+      // 盤移動
+      if(!drag) return;
+      const {x:xw,y:yw}=toWorld(mx,my); const s=squares.find(x=>String(x.id)===String(drag.id)); if(!s) return;
+      let nx=snap(xw-drag.offsetX,SNAP_X), ny=snap(yw-drag.offsetY,SNAP_Y);
+      nx=Math.max(0,nx); ny=Math.max(0,ny); s.x=nx; s.y=ny; draw();
+    });
+    window.addEventListener('mouseup',()=>{ panning=false; panStart=null; drag=null; saveState(); });
+
+    window.addEventListener('keydown',(e)=>{
+      if (e.code==='Space') isSpaceDown=true;
+
+      // ズームのキーボードショートカット
+      if (e.key==='+' || e.key==='='){ e.preventDefault(); setZoom(zoom+ZOOM_STEP); }
+      if (e.key==='-' || e.key==='_'){ e.preventDefault(); setZoom(zoom-ZOOM_STEP); }
+      if (e.key.toLowerCase()==='f'){ e.preventDefault(); fitZoom(); }
+
+      // エディット
+      if (!isProblemGenerated || !activeCell || showSolution) return;
+      const s=squares.find(x=>String(x.id)===String(activeCell.id)); if(!s) return;
+      if (s.problemData[activeCell.r][activeCell.c] > 0) return;
+      if (e.key>='1'&&e.key<='9'){ s.userData[activeCell.r][activeCell.c]=parseInt(e.key,10); s.checkData[activeCell.r][activeCell.c]=0; draw(); e.preventDefault(); saveState(); return; }
+      if (e.key==='Backspace'||e.key==='Delete'||e.key==='0'){ s.userData[activeCell.r][activeCell.c]=0; s.checkData[activeCell.r][activeCell.c]=0; draw(); e.preventDefault(); saveState(); return; }
+      const mv={ArrowUp:[-1,0],ArrowDown:[1,0],ArrowLeft:[0,-1],ArrowRight:[0,1]}[e.key];
+      if (mv){ const nr=clamp(activeCell.r+mv[0],0,GRID-1), nc=clamp(activeCell.c+mv[1],0,GRID-1); activeCell={ id:activeCell.id, r:nr, c:nc }; draw(); e.preventDefault(); }
+    });
+    window.addEventListener('keyup',(e)=>{ if (e.code==='Space') isSpaceDown=false; });
+
     // ===== ボタン =====
     addSquareButton?.addEventListener('click',()=>{
       const s=newSquareAtWorldCenter();
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
-      setStatus('盤を追加：ホイールでズーム、背景ドラッグでパン、盤面ドラッグで移動');
-      updateButtonStates(); draw(); saveState();
+      setStatus('盤を追加：いま見ている中心に生成しました（Space/右/中ドラッグでパン、ホイールでズーム）');
+      updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
 
     deleteButton?.addEventListener('click',()=>{
@@ -248,7 +264,7 @@
       squares=squares.filter(s=>String(s.id)!==String(activeSquareId));
       activeSquareId=null; activeCell=null; isProblemGenerated = squares.length>0 && isProblemGenerated;
       showSolution=false; setStatus('選択中の盤を削除');
-      updateButtonStates(); draw(); saveState();
+      updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
 
     clearAllBoardsButton?.addEventListener('click', ()=>{
@@ -288,12 +304,43 @@
         boards:squares.map(s=>({id:s.id,problem:s.problemData,user:s.userData,solution:s.solutionData})) };
       const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
       const url=URL.createObjectURL(blob);
-      const a=document.createElement('a'); a.href=url; a.download=`gattai_export_${Date.now()}.json`; a.click(); URL.revokeObjectURL(url);
+      const a=document.createElement('a'); a.href=url; a.download='gattai_export.json'; a.click(); URL.revokeObjectURL(url);
     });
 
-    saveAllPngButton?.addEventListener('click', saveAllAsImage);
+    saveAllPngButton?.addEventListener('click', ()=>{
+      if (squares.length===0) return;
+      const {minX,minY,maxX,maxY}=contentBounds();
+      const pad = 10;
+      const W = Math.ceil(maxX-minX) + pad*2;
+      const H = Math.ceil(maxY-minY) + pad*2;
 
-    // ===== サーバ生成 =====
+      const off = document.createElement('canvas');
+      const scale = 2; // 高解像度
+      off.width = W*scale; off.height = H*scale;
+      const octx = off.getContext('2d', { alpha:false });
+
+      // 背景
+      octx.fillStyle='#fff'; octx.fillRect(0,0,off.width,off.height);
+      octx.scale(scale, scale);
+      octx.translate(pad - minX, pad - minY);
+
+      // 盤描画（ラベル非表示・ハイライトなし）
+      for (const s of squares){
+        // 一時的に現在のユーザ入力をそのまま描画（チェック赤も無効）
+        const copy = { ...s, checkData:createEmptyGrid() };
+        drawBoard.call({ ctx:octx }, copy, { showLabel:false });
+      }
+
+      // ダウンロード
+      off.toBlob((blob)=>{
+        const ts = new Date();
+        const name = `gattai_all_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.png`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+      }, 'image/png');
+    });
+
+    // ===== 生成（サーバ）=====
     async function handleGenerateProblem(){
       if (squares.length===0){ alert('まず「盤面を追加」してください'); return; }
       for (const sq of squares){ sq.problemData=createEmptyGrid(); sq.userData=createEmptyGrid(); sq.checkData=createEmptyGrid(); sq.solutionData=createEmptyGrid(); sq._userBackup=null; }
@@ -310,8 +357,11 @@
         isProblemGenerated=true;
         const cnt=checkAllAndReport();
         setStatus(`問題を作成しました！（${boards.length}盤） / 矛盾 ${cnt} 件${cnt===0?'（OK）':''}`);
+        autoFitIfOverflow();
       }catch(err){
-        console.error(err); alert(err?.message||'生成に失敗しました'); setStatus('生成に失敗しました');
+        console.error(err);
+        alert(err?.message || '生成に失敗しました');
+        setStatus('生成に失敗しました');
       }finally{
         generateProblemButton.disabled=false; updateButtonStates(); draw(); saveState();
       }
@@ -321,28 +371,28 @@
       const res = await fetch('/api/generate', {
         method:'POST',
         headers:{ 'content-type':'application/json' },
-        body: JSON.stringify({ layout, difficulty, overlapEmpty: true })
+        body: JSON.stringify({ layout, difficulty, overlapEmpty: true }) // ★共有マスは必ず空欄
       });
       if (!res.ok){
-        const t = await res.text().catch(()=> '');
-        throw new Error(`API ${res.status} ${t}`);
+        let msg=''; try{ msg = await res.text(); }catch{}
+        throw new Error(`API ${res.status} ${msg}`);
       }
-      const data=await res.json(); if (!data?.ok) throw new Error(data?.reason||'ok=false');
-      return data.puzzle?.boards||[];
+      const data = await res.json();
+      if (!data?.ok) throw new Error(data?.reason || 'ok=false');
+      return data.puzzle?.boards || [];
     }
 
     function renderBoards(boards){
       const map=new Map(boards.map(b=>[String(b.id),b]));
       for (const sq of squares){
         const b=map.get(String(sq.id)); if(!b) continue;
-        sq.problemData=cloneGrid(b.grid);
-        sq.solutionData=cloneGrid(b.solution||createEmptyGrid());
+        sq.problemData=cloneGrid(b.grid); sq.solutionData=cloneGrid(b.solution||createEmptyGrid());
         sq.userData=createEmptyGrid(); sq.checkData=createEmptyGrid();
       }
       updateButtonStates(); draw(); saveState();
     }
 
-    // ===== チェック =====
+    // ===== チェック（行/列/箱/共有）=====
     function runCheck(sq){
       sq.checkData=createEmptyGrid();
       const val=(r,c)=> (sq.userData[r][c] || sq.problemData[r][c] || 0);
@@ -414,36 +464,6 @@
       const total=countConflicts(); setStatus(`矛盾チェック：${total} 件${total===0?'（OK）':''}`); return total;
     }
 
-    // ===== 画像保存（全体） =====
-    function saveAllAsImage(){
-      if (squares.length===0){ alert('まず盤面を追加してください'); return; }
-
-      // 描画領域
-      const pad=24;
-      let {minX,minY,maxX,maxY}=contentBounds();
-      minX=Math.floor(minX)-pad; minY=Math.floor(minY)-pad;
-      maxX=Math.ceil(maxX)+pad;  maxY=Math.ceil(maxY)+pad;
-
-      const W=maxX-minX, H=maxY-minY;
-      const scale=2; // 高解像度
-      const off=document.createElement('canvas');
-      off.width=Math.max(1, W*scale);
-      off.height=Math.max(1, H*scale);
-      const g=off.getContext('2d', { alpha:false });
-
-      // 白背景
-      g.fillStyle='#fff'; g.fillRect(0,0,off.width,off.height);
-
-      // 同じ描画をスケールして適用（ラベルは非表示）
-      g.setTransform(scale,0,0,scale, -minX*scale, -minY*scale);
-      for (const s of squares) drawBoardTo(g, s, { hideId:true });
-
-      // ダウンロード
-      const url=off.toDataURL('image/png');
-      const a=document.createElement('a'); a.href=url; a.download=`gattai_all_${Date.now()}.png`; a.click();
-      URL.revokeObjectURL?.(url);
-    }
-
     // ===== 保存/復元/初期化 =====
     function saveState(){
       try{
@@ -473,23 +493,17 @@
       const W=Math.floor(w*devicePR), H=Math.floor(h*devicePR);
       if (canvas.width!==W || canvas.height!==H){ canvas.width=W; canvas.height=H; applyTransform(); draw(); }
     }
-    window.addEventListener('resize', ()=>{ resizeCanvasToDisplaySize(); draw(); });
+    window.addEventListener('resize', ()=>{ resizeCanvasToDisplaySize(); draw(); autoFitIfOverflow(); });
 
-    // 起動
+    // ===== 起動 =====
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('盤を追加 →「合体問題を作成」。ホイールでズーム、背景ドラッグでパン、盤面ドラッグで移動。');
+      setStatus('盤を追加 →「合体問題を作成」。Space/右/中ドラッグでパン、ホイールでズーム、Fでフィット。');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
       applyTransform(); draw();
     }
     updateButtonStates();
-
-    // ズームUI
-    zoomOutBtn?.addEventListener('click',()=>setZoom(zoom-ZOOM_STEP));
-    zoomInBtn ?.addEventListener('click',()=>setZoom(zoom+ZOOM_STEP));
-    zoom100Btn?.addEventListener('click',()=>setZoom(1));
-    zoomFitBtn?.addEventListener('click',fitZoom);
   });
 })();
