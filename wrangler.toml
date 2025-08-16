@@ -13,15 +13,7 @@ id = "e74451c9be784ff380e1039aaa03794e"   # ←本番KVのIDに置き換え
 
 # ==== 環境変数（共通） ====
 [vars]
-# 生成・レート制限関連
-DAILY_LIMIT = "20"
-DAILY_LIMIT_WITH_AD = "100"
-GEN_TIMEOUT_MS = "3500"
-MAX_BOARDS = "40"
-GEN_RETRY = "3"
-
-# 開発中は quota を無効化したい場合は "1"
-# 本番では "0" を推奨
+# 開発中は quota を無効化したい場合は "1"（本番では "0" を推奨）
 DISABLE_QUOTA = "1"
 
 # ==== preview 環境の上書き（任意。ローカル/プレビューだけ quota 無効化）====
