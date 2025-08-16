@@ -1,45 +1,58 @@
 // functions/api/generate.js
-// 目的: 各盤が「少なくとも一意解」になるまでサーバ側で自動的にヒントを追加してから返す
-// ポイント:
-//  - 既知の完成解 solved を持ちながら、パズル p に対して「solved と異なる別解が存在するか」を直接探索
-//  - 別解が見つかったら、solved の値をヒントとして 1 マス追加 → 共有セルにも伝播 → 再検証 → 再チェック
-//  - 時間/試行バジェット内で収束させる（単盤なら現実的時間で安定収束）
+// 目的：
+//  - 難易度でヒント数の差が明確に出る
+//  - 盤と盤の重なりセルにはヒントを置かない（常に空欄）
+//  - 各盤のヒント数をバランス良く（全盤で同数）
+//  - ヒント配置は点対称（180°回転対称）で美しく
+//  - Sudoku の成立条件は常に担保（行/列/ブロック、重なり一致）
 //
-// 合体の“全体唯一”までは保証しませんが、「1枚構成でも重解が出る」問題を確実に止めます。
+// フロントの difficulty は: easy / normal / hard / expert / extreme を想定
 
 const GRID = 9;
 const CELL_PX = 30;
-const HINT_BY_DIFF = { easy: 40, normal: 36, hard: 30, expert: 28, extreme: 26 };
 
-const MAX_ATTEMPTS = 30;              // 全体の再生成試行
-const DEFAULT_GEN_TIMEOUT_MS = 6000;  // 生成タイムバジェット（ms）少し余裕を増やす
+// 難易度別：ヒント数（１盤の「重なり以外のセル」に残す個数）
+const HINTS = {
+  easy: 46,
+  normal: 40,
+  hard: 34,
+  expert: 30,
+  extreme: 26,
+};
 
+// 難易度別：最低分布（行/列/箱）に残すヒントの下限（重なり以外）
+// 配置のバランスが良くなり、見た目の差も出やすい
+const MIN_PER = {
+  easy:   { row: 4, col: 4, box: 4 },
+  normal: { row: 3, col: 3, box: 3 },
+  hard:   { row: 2, col: 2, box: 2 },
+  expert: { row: 1, col: 1, box: 1 },
+  extreme:{ row: 0, col: 0, box: 0 },
+};
+
+// ポリシー
+const NO_HINTS_ON_OVERLAP = true;   // 重なりセルは常に空欄
+const MAX_ATTEMPTS = 30;            // 全体生成の最大リトライ
+
+// ---- ユーティリティ ----
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
-/* ---------- small utils ---------- */
-const now = () => Date.now();
-const shuffle = (a)=>{ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; };
-const cloneGrid = g => g.map(r=>r.slice());
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
 
-/* 完全解ジェネレータ */
+// 盤全体を一括で組み立てるソリューションパターン（同一パターンの平行移動/置換）
 function makeGlobalPattern(){
   function makeOrder(){
-    const band = shuffle([0,1,2]);
-    const out = [];
-    for (const b of band){
-      const inner = shuffle([0,1,2]);
-      for (const k of inner) out.push(b*3+k);
-    }
-    return out;
+    const bandOrder = shuffle([0,1,2]); const order=[];
+    for (const b of bandOrder){ const inner=shuffle([0,1,2]); for (const k of inner) order.push(b*3+k); }
+    return order;
   }
-  const rowOrder = makeOrder();
-  const colOrder = makeOrder();
-  const digitPerm = shuffle([1,2,3,4,5,6,7,8,9]);
-  const base = (r,c)=>(r*3 + Math.floor(r/3) + c) % 9;
+  const rowOrder=makeOrder(), colOrder=makeOrder(), digitPerm=shuffle([1,2,3,4,5,6,7,8,9]);
+  const base=(r,c)=>(r*3 + Math.floor(r/3) + c) % 9;
   function valueAt(R,C){
     const r=rowOrder[((R%9)+9)%9], c=colOrder[((C%9)+9)%9];
     return digitPerm[ base(r,c) ];
@@ -47,17 +60,17 @@ function makeGlobalPattern(){
   return { valueAt };
 }
 
-/* レイアウト正規化（Y は 3 セル単位に） */
 function normalizeLayout(layout){
-  return layout.map(o=>{
-    const ox=Math.round((Number(o.x)||0)/CELL_PX);
-    let oy=Math.round((Number(o.y)||0)/CELL_PX);
-    oy -= oy%3;
-    return { id:String(o.id), ox, oy, rawx:Number(o.x)||0, rawy:Number(o.y)||0 };
-  });
+  return layout.map(o=>({
+    id:String(o.id),
+    ox: Math.round((Number(o.x)||0)/CELL_PX),
+    oy: Math.round((Number(o.y)||0)/CELL_PX),
+    rawx: Number(o.x)||0,
+    rawy: Number(o.y)||0
+  }));
 }
 
-/* 共有セル列挙 */
+// どの盤がどこで重なるか（座標は各盤の0..8）
 function buildOverlaps(nlayout){
   const n=nlayout.length, overlaps=Array.from({length:n},()=>[]);
   for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
@@ -66,297 +79,282 @@ function buildOverlaps(nlayout){
     const R1=Math.min(8, (B.oy+8)-A.oy), C1=Math.min(8, (B.ox+8)-A.ox);
     if (R0<=R1 && C0<=C1){
       const cells=[];
-      for(let r=R0;r<=R1;r++) for(let c=C0;c<=C1;c++){
+      for (let r=R0;r<=R1;r++) for (let c=C0;c<=C1;c++){
         const r2=r + A.oy - B.oy, c2=c + A.ox - B.ox;
         cells.push({ r,c,r2,c2 });
       }
       overlaps[i].push({ j, cells });
-      overlaps[j].push({ j:i, cells: cells.map(({r,c,r2,c2})=>({ r:r2, c:c2, r2:r, c2:c })) });
+      // 逆方向（j側）も作る
+      overlaps[j].push({ j:i, cells: cells.map(({r,c,r2,c2})=>({ r:r2,c:c2,r2:r,c2:c })) });
     }
   }
   return overlaps;
 }
 
-/* 穴あけ（対称） */
-function carveBoard(solved, hintTarget){
-  const g = solved.map(r=>r.slice());
-  const order = [...Array(81).keys()];
-  shuffle(order);
-  let toRemove = Math.max(0, 81-hintTarget);
-  for (const idx of order){
-    if (toRemove<=0) break;
-    const r=(idx/9)|0, c=idx%9, or=8-r, oc=8-c;
-    if (g[r][c]===0 && g[or][oc]===0) continue;
-    g[r][c]=0; g[or][oc]=0;
-    toRemove -= (r===or && c===oc) ? 1 : 2;
+// 各盤ごとの「重なりセル」マスクを作る（true=重なり）
+function buildForbidMasks(nlayout){
+  const masks = Array.from({length:nlayout.length}, ()=> Array.from({length:GRID}, ()=> Array(GRID).fill(false)));
+  const ov = buildOverlaps(nlayout);
+  for (let i=0;i<ov.length;i++){
+    for (const e of ov[i]){
+      for (const {r,c} of e.cells){
+        masks[i][r][c] = true;
+      }
+    }
   }
-  return g;
+  return { masks, overlaps: ov };
 }
 
-/* 与え矛盾（行/列/箱） */
 function puzzleHasContradiction(p){
-  // row
+  // 与え同士がぶつかっていないか（0は無視）
+  // 行
   for (let r=0;r<9;r++){
     const seen=new Set();
-    for (let c=0;c<9;c++){
-      const v=p[r][c]|0; if(!v) continue;
-      if (seen.has(v)) return true; seen.add(v);
-    }
+    for (let c=0;c<9;c++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
   }
-  // col
+  // 列
   for (let c=0;c<9;c++){
     const seen=new Set();
-    for (let r=0;r<9;r++){
-      const v=p[r][c]|0; if(!v) continue;
-      if (seen.has(v)) return true; seen.add(v);
-    }
+    for (let r=0;r<9;r++){ const v=p[r][c]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v); }
   }
-  // box
+  // 箱
   for (let br=0;br<9;br+=3) for (let bc=0;bc<9;bc+=3){
     const seen=new Set();
     for (let dr=0;dr<3;dr++) for (let dc=0;dc<3;dc++){
-      const v=p[br+dr][bc+dc]|0; if(!v) continue;
-      if (seen.has(v)) return true; seen.add(v);
+      const v=p[br+dr][bc+dc]|0; if(!v) continue; if (seen.has(v)) return true; seen.add(v);
     }
   }
   return false;
 }
 
-/* クランプ：与え!=0 のマスは必ず完成解に合わせる */
-function clampPuzzleToSolution(puzzle, solution){
-  for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-    if ((puzzle[r][c]|0)!==0) puzzle[r][c]=solution[r][c];
-  }
-}
+// forbidMask（true=重なりセル）は常に 0 にする
+// targetKeep は「重なり以外で残すヒント個数」
+function carveSymmetricWithForbid(solved, targetKeep, forbidMask, minRow, minCol, minBox){
+  // 1) 対称ペアを列挙（重なりセルは候補から除外）
+  const visited = Array.from({length:GRID}, ()=>Array(GRID).fill(false));
+  const pairs = []; // { a:{r,c}, b:{r,c} } または center:{r,c}
+  let centerAllowed = false;
 
-/* 与えの統一と、共有に値がある場合は両盤を完成解値で固定 */
-function unifyGivenCells(puzzles, overlaps){
-  for (let i=0;i<overlaps.length;i++){
-    for (const e of overlaps[i]){
-      const j=e.j;
-      for (const {r,c,r2,c2} of e.cells){
-        const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
-        if (a!==0 && b===0) puzzles[j][r2][c2]=a;
-        else if (b!==0 && a===0) puzzles[i][r][c]=b;
-      }
-    }
-  }
-}
-function enforceOverlapBySolution(puzzles, solved, overlaps){
-  for (let i=0;i<overlaps.length;i++){
-    for (const e of overlaps[i]){
-      const j=e.j;
-      for (const {r,c,r2,c2} of e.cells){
-        const sVal=solved[i][r][c];
-        if (puzzles[i][r][c]!==0 || puzzles[j][r2][c2]!==0){
-          puzzles[i][r][c]=sVal; puzzles[j][r2][c2]=sVal;
+  const center = { r:4, c:4 };
+  if (!forbidMask[4][4]) centerAllowed = true;
+
+  for (let r=0;r<GRID;r++){
+    for (let c=0;c<GRID;c++){
+      if (visited[r][c]) continue;
+      if (forbidMask[r][c]) { visited[r][c]=true; continue; }
+      const r2=8-r, c2=8-c;
+      if (r===r2 && c===c2){
+        // 中心
+        if (centerAllowed){
+          pairs.push({ center: { r, c } });
         }
-      }
-    }
-  }
-}
-
-/* 総合バリデーション（与え矛盾 + 共有矛盾） */
-function validateAll(puzzles, overlaps){
-  for (const p of puzzles){
-    if (puzzleHasContradiction(p)) return {ok:false, reason:'row/col/box contradiction'};
-  }
-  for (let i=0;i<overlaps.length;i++){
-    for (const e of overlaps[i]){
-      const j=e.j;
-      for (const {r,c,r2,c2} of e.cells){
-        const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
-        if (a!==0 && b!==0 && a!==b) return {ok:false, reason:'overlap mismatch'};
-      }
-    }
-  }
-  return {ok:true};
-}
-
-/* === 標準数独ソルバ（2解までカウント）=== */
-function countSolutionsBoard(p, limit=2){
-  const ROW=new Uint16Array(9), COL=new Uint16Array(9), BOX=new Uint16Array(9);
-  const BIT=d=>1<<d, ALL=0x3FE;
-  const empties=[];
-  for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-    const v=p[r][c]|0;
-    if (v){
-      const bi=Math.floor(r/3)*3+Math.floor(c/3), bit=BIT(v);
-      if (ROW[r]&bit || COL[c]&bit || BOX[bi]&bit) return 0;
-      ROW[r]|=bit; COL[c]|=bit; BOX[bi]|=bit;
-    }else empties.push([r,c]);
-  }
-  const domainMask=(r,c)=>{ const bi=Math.floor(r/3)*3+Math.floor(c/3); return (ALL ^ (ROW[r]|COL[c]|BOX[bi])); };
-  let sol=0;
-  function dfs(){
-    if (sol>=limit) return;
-    let best=-1, bestM=0, bestPop=10;
-    for (let i=0;i<empties.length;i++){
-      const [r,c]=empties[i]; if (p[r][c]) continue;
-      const m=domainMask(r,c), pc=popcnt(m);
-      if (pc===0) return;
-      if (pc<bestPop){ best=i; bestM=m; bestPop=pc; if (pc===1) break; }
-    }
-    if (best===-1){ sol++; return; }
-    const [r,c]=empties[best]; const bi=Math.floor(r/3)*3+Math.floor(c/3);
-    let m=bestM;
-    while(m){
-      const v=ctz(m); m&=m-1; const bit=1<<v;
-      p[r][c]=v; ROW[r]|=bit; COL[c]|=bit; BOX[bi]|=bit;
-      dfs();
-      ROW[r]&=~bit; COL[c]&=~bit; BOX[bi]&=~bit; p[r][c]=0;
-      if (sol>=limit) return;
-    }
-  }
-  dfs();
-  return Math.min(sol, limit);
-  function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
-  function ctz(x){ let n=0; while(((x>>>n)&1)===0) n++; return n; }
-}
-
-/* === “既知解と異なる解があるか”を直接探索 === */
-function hasAnotherSolutionBoard(p, solved){
-  // p をコピーして DFS。完成したときに solved と完全一致なら「別解ではない」として無視。
-  const board = p.map(r=>r.slice());
-  const ROW=new Uint16Array(9), COL=new Uint16Array(9), BOX=new Uint16Array(9);
-  const BIT=d=>1<<d, ALL=0x3FE;
-
-  const empties=[];
-  for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-    const v=board[r][c]|0;
-    if (v){
-      const bi=Math.floor(r/3)*3+Math.floor(c/3), bit=BIT(v);
-      if (ROW[r]&bit || COL[c]&bit || BOX[bi]&bit) return false; // 与え矛盾 → 「別解」以前の問題
-      ROW[r]|=bit; COL[c]|=bit; BOX[bi]|=bit;
-    }else empties.push([r,c]);
-  }
-  const domainMask=(r,c)=>{ const bi=Math.floor(r/3)*3+Math.floor(c/3); return (ALL ^ (ROW[r]|COL[c]|BOX[bi])); };
-
-  // できるだけ solved と違う候補から試す（別解探索を優先）
-  function nextCell(){
-    let best=-1, bestM=0, bestPop=10;
-    for (let i=0;i<empties.length;i++){
-      const [r,c]=empties[i]; if (board[r][c]) continue;
-      const m=domainMask(r,c), pc=popcnt(m);
-      if (pc===0) return null;
-      if (pc<bestPop){ best=i; bestM=m; bestPop=pc; if (pc===1) break; }
-    }
-    if (best===-1) return { done:true };
-    const [r,c]=empties[best]; const bi=Math.floor(r/3)*3+Math.floor(c/3);
-    // 候補列：まず "solved と違う候補"、最後に "同じ候補"
-    const cand=[];
-    let m=bestM;
-    while(m){ const v=ctz(m); m&=m-1; cand.push(v); }
-    const solv = solved[r][c]|0;
-    const others = cand.filter(v=>v!==solv);
-    const ordered = others.concat(solv && cand.includes(solv) ? [solv] : []);
-    return { r,c,bi,ordered };
-  }
-
-  function dfs(){
-    const pick = nextCell();
-    if (!pick) return false;       // 行き止まり
-    if (pick.done){
-      // 完成。solved と一致？ → 別解ではない
-      for (let r=0;r<9;r++) for (let c=0;c<9;c++) if (board[r][c] !== (solved[r][c]|0)) return true;
-      return false;
-    }
-    const { r,c,bi,ordered } = pick;
-    for (const v of ordered){
-      const bit=1<<v;
-      if (ROW[r]&bit || COL[c]&bit || BOX[bi]&bit) continue;
-      board[r][c]=v; ROW[r]|=bit; COL[c]|=bit; BOX[bi]|=bit;
-      if (dfs()) return true;
-      ROW[r]&=~bit; COL[c]&=~bit; BOX[bi]&=~bit; board[r][c]=0;
-    }
-    return false;
-  }
-
-  const ans = dfs();
-  return ans;
-
-  function popcnt(x){ x=x-((x>>>1)&0x55555555); x=(x&0x33333333)+((x>>>2)&0x33333333); return (((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24; }
-  function ctz(x){ let n=0; while(((x>>>n)&1)===0) n++; return n; }
-}
-
-/* 共有位置へも伝播する与え追加入れ子 */
-function applyGiven(puzzles, i, r, c, val, overlaps){
-  if (puzzles[i][r][c] === val) return;
-  puzzles[i][r][c] = val;
-  // 共有セルへ伝播
-  for (const e of overlaps[i]){
-    for (const {r:rr,c:cc,r2,c2} of e.cells){
-      if (rr===r && cc===c) puzzles[e.j][r2][c2] = val;
-    }
-  }
-}
-
-/* 一意化: 別解が無くなるまで、solved の値をヒント追加（MRVっぽく） */
-function enforcePerBoardUniqueness(puzzles, solved, overlaps, deadlineMs){
-  for (let i=0;i<puzzles.length;i++){
-    // まず「少なくとも 1 解」は成り立つか（与えが solved に矛盾しないか）
-    clampPuzzleToSolution(puzzles[i], solved[i]);
-    if (puzzleHasContradiction(puzzles[i])) return false;
-
-    // 別解がある間は潰す
-    while (true){
-      if (now() > deadlineMs) return false;
-
-      const hasAlt = hasAnotherSolutionBoard(puzzles[i], solved[i]);
-      if (!hasAlt) break; // 一意になった
-
-      // 候補追加先を選ぶ：現在 0 のセルの中で候補が多そうな場所を優先して、solved の値を固定
-      const blanks=[];
-      for (let r=0;r<9;r++) for (let c=0;c<9;c++) if ((puzzles[i][r][c]|0)===0) blanks.push([r,c]);
-      if (blanks.length===0) return false;
-
-      // 雑にシャッフルしてから上から試す（十分収束します）
-      shuffle(blanks);
-      let fixed=false;
-      for (const [r,c] of blanks){
-        const val = solved[i][r][c]|0;
-        if (!val) continue;
-
-        applyGiven(puzzles, i, r, c, val, overlaps);
-        clampPuzzleToSolution(puzzles[i], solved[i]);
-        unifyGivenCells(puzzles, overlaps);
-        enforceOverlapBySolution(puzzles, solved, overlaps);
-
-        const vAll = validateAll(puzzles, overlaps);
-        if (!vAll.ok){
-          // 無効なら戻す（単純に 0 に戻す）
-          // 共有側も戻す必要があるが、次の再生成で整うので、この試行はスキップ
-          puzzles[i][r][c]=0;
+        visited[r][c]=true;
+      }else{
+        if (forbidMask[r2][c2]){ // 相方が禁止なら、このセルも実質使えない
+          visited[r][c]=true; visited[r2][c2]=true;
           continue;
         }
-        fixed=true;
-        break;
+        pairs.push({ a:{r,c}, b:{r:r2, c:c2} });
+        visited[r][c]=true; visited[r2][c2]=true;
       }
-      if (!fixed) return false; // どれも有効に追加できない＝収束困難
+    }
+  }
+
+  // 2) 取りうる最大ヒント数（重なり以外）
+  let maxKeep = 0;
+  for (const p of pairs){
+    if (p.center) maxKeep += 1; else maxKeep += 2;
+  }
+  const wantKeep = clamp(targetKeep, 0, maxKeep);
+
+  // 3) Greedy にペアを選んで「分布の下限」を満たしながら wantKeep に近づける
+  const rowCnt = new Uint16Array(9); // 現在残す予定の数
+  const colCnt = new Uint16Array(9);
+  const boxCnt = new Uint16Array(9);
+  const kept = new Set(); // index of pairs kept
+  const idxs = pairs.map((_,i)=>i);
+
+  function boxIndex(r,c){ return Math.floor(r/3)*3 + Math.floor(c/3); }
+
+  function addPair(i){
+    const p = pairs[i];
+    if (p.center){
+      const {r,c} = p.center;
+      rowCnt[r]++; colCnt[c]++; boxCnt[boxIndex(r,c)]++;
+    }else{
+      const a=p.a, b=p.b;
+      rowCnt[a.r]++; colCnt[a.c]++; boxCnt[boxIndex(a.r,a.c)]++;
+      rowCnt[b.r]++; colCnt[b.c]++; boxCnt[boxIndex(b.r,b.c)]++;
+    }
+    kept.add(i);
+  }
+  function removePair(i){
+    if (!kept.has(i)) return;
+    const p = pairs[i];
+    if (p.center){
+      const {r,c} = p.center;
+      rowCnt[r]--; colCnt[c]--; boxCnt[boxIndex(r,c)]--;
+    }else{
+      const a=p.a, b=p.b;
+      rowCnt[a.r]--; colCnt[a.c]--; boxCnt[boxIndex(a.r,a.c)]--;
+      rowCnt[b.r]--; colCnt[b.c]--; boxCnt[boxIndex(b.r,b.c)]--;
+    }
+    kept.delete(i);
+  }
+
+  // スコア：不足分（row/col/box）をどれだけ改善するか
+  function scorePair(i){
+    const p=pairs[i];
+    let s=0;
+    if (p.center){
+      const {r,c}=p.center, b=boxIndex(r,c);
+      if (rowCnt[r] < minRow) s++;
+      if (colCnt[c] < minCol) s++;
+      if (boxCnt[b] < minBox) s++;
+    }else{
+      const a=p.a, b=p.b;
+      const biA=boxIndex(a.r,a.c), biB=boxIndex(b.r,b.c);
+      if (rowCnt[a.r]<minRow) s++;
+      if (colCnt[a.c]<minCol) s++;
+      if (boxCnt[biA]<minBox) s++;
+      if (rowCnt[b.r]<minRow) s++;
+      if (colCnt[b.c]<minCol) s++;
+      if (boxCnt[biB]<minBox) s++;
+    }
+    // 少しランダム性（並び替えの安定化防止）
+    return s*100 + Math.random();
+  }
+
+  // 3-1) まず不足を埋める方向でペアを追加
+  shuffle(idxs);
+  while (kept.size < wantKeep){
+    // ソートは重いので、上位候補だけ見る
+    const remain = idxs.filter(i=>!kept.has(i));
+    if (remain.length===0) break;
+    remain.sort((i,j)=>scorePair(j)-scorePair(i));
+    const pick = remain[0];
+    addPair(pick);
+  }
+
+  // 3-2) 下限を満たしているか確認。満たしていなければ、残りの中から補強追加（上限はmaxKeepなので超える可能性あり）
+  function hasDeficit(){
+    for (let r=0;r<9;r++) if (rowCnt[r] < minRow) return true;
+    for (let c=0;c<9;c++) if (colCnt[c] < minCol) return true;
+    for (let b=0;b<9;b++) if (boxCnt[b] < minBox) return true;
+    return false;
+  }
+  let safety = 0;
+  while (hasDeficit() && safety++ < 200){
+    const remain = idxs.filter(i=>!kept.has(i));
+    if (remain.length===0) break;
+    remain.sort((i,j)=>scorePair(j)-scorePair(i));
+    addPair(remain[0]);
+  }
+
+  // 3-3) 行き過ぎて wantKeep より多くなったら、なるべく影響の小さいペアから削る
+  function negativeScore(i){
+    // これを外したときの「下限割れリスク」が小さいほど良い
+    const p=pairs[i];
+    let risk=0;
+    if (p.center){
+      const {r,c}=p.center, b=boxIndex(r,c);
+      if (rowCnt[r] <= minRow) risk+=3;
+      if (colCnt[c] <= minCol) risk+=3;
+      if (boxCnt[b] <= minBox) risk+=3;
+    }else{
+      const a=p.a, b=p.b;
+      const biA=boxIndex(a.r,a.c), biB=boxIndex(b.r,b.c);
+      if (rowCnt[a.r] <= minRow) risk+=1;
+      if (colCnt[a.c] <= minCol) risk+=1;
+      if (boxCnt[biA] <= minBox) risk+=1;
+      if (rowCnt[b.r] <= minRow) risk+=1;
+      if (colCnt[b.c] <= minCol) risk+=1;
+      if (boxCnt[biB] <= minBox) risk+=1;
+    }
+    return risk*100 - Math.random();
+  }
+
+  while (kept.size > wantKeep){
+    const ks = Array.from(kept);
+    ks.sort((i,j)=>negativeScore(i)-negativeScore(j));
+    removePair(ks[0]);
+  }
+
+  // 4) グリッドを作る（重なりは常に0）
+  const g = solved.map(r=>r.slice());
+  // いったん全部0（重なり含めて）
+  for (let r=0;r<9;r++) for (let c=0;c<9;c++) g[r][c]=0;
+  for (const i of kept){
+    const p=pairs[i];
+    if (p.center){
+      const {r,c}=p.center; g[r][c] = solved[r][c];
+    }else{
+      const {a,b}=p; g[a.r][a.c] = solved[a.r][a.c]; g[b.r][b.c] = solved[b.r][b.c];
+    }
+  }
+  // forbid（重なり）は保証として0のまま
+  return g;
+}
+
+// 重なりセルは常に 0 にそろえる（NO_HINTS_ON_OVERLAP 前提）
+function unifyOverlapZeros(puzzles, overlaps){
+  if (!NO_HINTS_ON_OVERLAP) return;
+  for (let i=0;i<overlaps.length;i++){
+    for (const e of overlaps[i]){
+      const j=e.j;
+      for (const {r,c,r2,c2} of e.cells){
+        puzzles[i][r][c] = 0;
+        puzzles[j][r2][c2] = 0;
+      }
+    }
+  }
+}
+
+// 与えが解答とズレないよう最終クランプ（保険）
+function clampPuzzleToSolution(puzzle, solution){
+  for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+    const v=puzzle[r][c]|0; if(v!==0) puzzle[r][c]=solution[r][c];
+  }
+}
+
+// 検証：各盤が矛盾なし／重なりは一致（ここでは重なりは両方0）
+function validateAll(puzzles, solved, overlaps){
+  // 盤内の与え矛盾
+  for (const p of puzzles) if (puzzleHasContradiction(p)) return false;
+  // 重なり一致
+  for (let i=0;i<overlaps.length;i++){
+    for (const e of overlaps[i]){
+      const j=e.j;
+      for (const {r,c,r2,c2} of e.cells){
+        const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
+        if (a!==b) return false; // いずれも0のはず
+      }
+    }
+  }
+  // 与え != 解答の齟齬（与え>0 は解答と同値）
+  for (let k=0;k<puzzles.length;k++){
+    const p=puzzles[k], s=solved[k];
+    for (let r=0;r<9;r++) for (let c=0;c<9;c++){
+      if (p[r][c]!==0 && p[r][c]!==s[r][c]) return false;
     }
   }
   return true;
 }
 
-/* ---------- ハンドラ ---------- */
-export async function onRequestPost({ request, env }) {
-  let body = {};
-  try { body = await request.json(); } catch {}
+// ---- ハンドラ ----
+export const onRequestPost = async ({ request }) => {
+  let body = {}; try { body = await request.json(); } catch {}
   const layout = Array.isArray(body.layout) ? body.layout : [];
   const difficulty = String(body.difficulty || "normal");
   if (layout.length === 0) return json({ ok:false, reason:"layout required" }, 400);
 
+  const hintBase = HINTS[difficulty] ?? HINTS.normal;
+  const minReq  = MIN_PER[difficulty] ?? MIN_PER.normal;
+
   const nlayout = normalizeLayout(layout);
-  const overlaps = buildOverlaps(nlayout);
-  const hintTargetBase = HINT_BY_DIFF[difficulty] ?? HINT_BY_DIFF.normal;
 
-  const BUDGET = Number(env?.GEN_TIMEOUT_MS)||DEFAULT_GEN_TIMEOUT_MS;
-  const deadline = now() + Math.max(1500, BUDGET);
-
-  for (let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
-    if (now() > deadline) break;
-
-    // 完全解を作る
+  for (let attempt=0; attempt<MAX_ATTEMPTS; attempt++){
+    // 1) 解答（全盤一括パターン）
     const pattern = makeGlobalPattern();
     const solved = nlayout.map(({ ox, oy }) =>
       Array.from({ length: GRID }, (_, r) =>
@@ -364,37 +362,41 @@ export async function onRequestPost({ request, env }) {
       )
     );
 
-    // 穴あけ（難易度：10回ごとに +2 ヒントで収束を上げる）
-    const hintTarget = Math.min(81, hintTargetBase + Math.floor((attempt-1)/10)*2);
-    let puzzles = solved.map(g => carveBoard(g, hintTarget));
+    // 2) 重なり情報と forbid（重なり）マスク
+    const { masks: forbidMasks, overlaps } = buildForbidMasks(nlayout);
 
-    // 与え整合
-    unifyGivenCells(puzzles, overlaps);
-    enforceOverlapBySolution(puzzles, solved, overlaps);
-    for (let i=0;i<puzzles.length;i++) clampPuzzleToSolution(puzzles[i], solved[i]);
+    // 3) 各盤で「重なり以外のセル数」を見て、全盤共通の targetKeep を決める（バランス重視）
+    const allowedCounts = forbidMasks.map(mask=>{
+      let cnt=0; for (let r=0;r<9;r++) for (let c=0;c<9;c++) if (!mask[r][c]) cnt++;
+      return cnt;
+    });
+    const maxTargetPerBoard = Math.min(...allowedCounts);           // 全盤で実現可能な上限
+    const targetKeep = clamp(hintBase, 0, maxTargetPerBoard);       // 全盤同数にする
 
-    // バリデーション
-    let v = validateAll(puzzles, overlaps);
-    if (!v.ok) continue;
+    // 4) 点対称＆分布下限を満たしつつ、重なりにはヒントを置かないように削る
+    let puzzles = solved.map((grid, i) =>
+      carveSymmetricWithForbid(grid, targetKeep, forbidMasks[i], minReq.row, minReq.col, minReq.box)
+    );
 
-    // ★各盤を一意化（別解がある限り追加ヒント）
-    const ok = enforcePerBoardUniqueness(puzzles, solved, overlaps, deadline);
-    if (!ok) continue;
+    // 5) 重なりは強制0（安全のためもう一度）
+    unifyOverlapZeros(puzzles, overlaps);
 
-    // 最終チェック
-    v = validateAll(puzzles, overlaps);
-    if (!v.ok) continue;
+    // 6) 与え＝解答の整合性を最終保証
+    for (let i=0;i<puzzles.length;i++){
+      clampPuzzleToSolution(puzzles[i], solved[i]);
+    }
 
-    // 返却
+    // 7) 検証：矛盾や不一致があればやり直し
+    if (!validateAll(puzzles, solved, overlaps)) continue;
+
+    // 8) 完成
     const boards = nlayout.map((o, idx) => ({
-      id: layout[idx].id,
-      x: o.rawx,
-      y: o.rawy,
+      id: layout[idx].id, x: o.rawx, y: o.rawy,
       grid: puzzles[idx],
-      solution: solved[idx]
+      solution: solved[idx],
     }));
     return json({ ok:true, puzzle:{ boards } });
   }
 
-  return json({ ok:false, reason:"generator failed within time budget" }, 500);
-}
+  return json({ ok:false, reason:"generator failed to produce a valid puzzle" }, 500);
+};
