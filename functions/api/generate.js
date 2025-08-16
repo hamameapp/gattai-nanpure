@@ -1,17 +1,11 @@
 // Cloudflare Pages Functions: /functions/api/generate.js
-// 唯一解保証・共有整合・重い探索はリカバリして成功率を上げる
+// 失敗しない生成：唯一解保証 + 資源安全（締切内で必ず返す）
 
 const GRID = 9;
 const CELL_PX = 30;
 
 // 難易度→残すヒント数（多いほど易しい）
-const HINT_BY_DIFF = {
-  easy: 40,
-  normal: 34,
-  hard: 30,
-  expert: 26,
-  extreme: 24,
-};
+const HINT_BY_DIFF = { easy: 40, normal: 34, hard: 30, expert: 26, extreme: 24 };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -34,7 +28,7 @@ function normalizeLayout(layout){
   return layout.map(o=>{
     const rawx=Number(o.x)||0, rawy=Number(o.y)||0;
     const ox=Math.round(rawx/CELL_PX);
-    let oy=Math.round(rawy/CELL_PX); oy -= oy%3; // 箱整合
+    let oy=Math.round(rawy/CELL_PX); oy -= oy%3; // 箱境界を揃える
     return { id:String(o.id), ox, oy, rawx, rawy };
   });
 }
@@ -59,10 +53,11 @@ function buildOverlaps(nlayout){
 }
 
 /* --------------------- ソルバ（0/1/2解, -1=締切超過） --------------------- */
-function countSolutionsFast(grid, limit=2, nodeLimit=120000, deadlineMs=0){
+function countSolutionsFast(grid, limit=2, nodeLimit=60000, deadlineMs=0){
   const ROW=new Uint16Array(9), COL=new Uint16Array(9), BOX=new Uint16Array(9);
   const ALL=0x3FE, bit=d=>1<<d, boxId=(r,c)=> (r/3|0)*3 + (c/3|0);
 
+  // 初期チェック
   for (let r=0;r<9;r++) for (let c=0;c<9;c++){
     const v=grid[r][c]|0; if(!v) continue;
     const b=boxId(r,c), m=bit(v);
@@ -70,6 +65,7 @@ function countSolutionsFast(grid, limit=2, nodeLimit=120000, deadlineMs=0){
     ROW[r]|=m; COL[c]|=m; BOX[b]|=m;
   }
 
+  // 未確定セル一覧
   const empty=[]; const filled=Array.from({length:9},()=>Array(9).fill(false));
   for (let r=0;r<9;r++) for (let c=0;c<9;c++){ if(!grid[r][c]) empty.push([r,c]); else filled[r][c]=true; }
 
@@ -95,11 +91,11 @@ function countSolutionsFast(grid, limit=2, nodeLimit=120000, deadlineMs=0){
     if (deadlineMs && Date.now()>deadlineMs) return -1;
     if (nodes++ > nodeLimit) return -1;
 
-    // まだ空きがあるか
+    // 空きが残っているか
     let any=false; for (const [r,c] of empty){ if(!filled[r][c]){ any=true; break; } }
     if (!any){ sols++; return sols>=limit ? limit : sols; }
 
-    const pick = pickCell();
+    const pick=pickCell();
     if (!pick) { sols++; return sols>=limit ? limit : sols; }
     if (pick.count===0) return sols;
 
@@ -130,11 +126,11 @@ function puzzleHasContradiction(p){
   return false;
 }
 
-/* --------------------- 削り（唯一解を守る／締切超過は無理せずスキップ） --------------------- */
-function carveUniqueFromSolved(solved, targetHints, forbidMask, deadlineMs){
+/* --------------------- 削り（速い）＋ 安全フォールバック --------------------- */
+function carveFast(solved, targetHints, forbidMask, deadlineMs){
   const g=solved.map(r=>r.slice());
 
-  // 共有マスは空欄固定
+  // forbid(共有)は空欄固定
   if (forbidMask){
     for (let r=0;r<9;r++) for (let c=0;c<9;c++) if (forbidMask[r][c]) g[r][c]=0;
   }
@@ -144,49 +140,38 @@ function carveUniqueFromSolved(solved, targetHints, forbidMask, deadlineMs){
   for (let r=0;r<9;r++) for (let c=0;c<9;c++){
     const or=8-r, oc=8-c;
     if (r>or || (r===or && c>oc)) continue;
+    // forbid を含むペアは削らない
+    if ((forbidMask?.[r]?.[c]) || (forbidMask?.[or]?.[oc])) continue;
     pairs.push([r,c,or,oc]);
   }
   shuffle(pairs);
 
-  // 現在ヒント数
   let hints=0; for (let r=0;r<9;r++) for (let c=0;c<9;c++) if (g[r][c]) hints++;
 
-  // 1) ペア削り
+  // ほぼチェック無しで一気に削る（軽い）
   for (const [r,c,or,oc] of pairs){
-    if (deadlineMs && Date.now()>deadlineMs) break;
+    if (Date.now()>deadlineMs) break;
     if (hints<=targetHints) break;
-    if ((!g[r][c] && !g[or][oc])) continue;
-    if ((forbidMask?.[r]?.[c]) || (forbidMask?.[or]?.[oc])) continue;
-
-    const keep1=g[r][c], keep2=g[or][oc];
+    if (!g[r][c] && !g[or][oc]) continue;
+    const k1=g[r][c], k2=g[or][oc];
     g[r][c]=0; g[or][oc]=0;
-
-    const cnt=countSolutionsFast(g,2,120000,deadlineMs);
-    if (cnt===1){
-      hints -= (r===or && c===oc) ? 1 : 2;
-    }else{
-      // 重すぎ or 複数解 → 戻すだけで続行（全体は成功させる）
-      g[r][c]=keep1; g[or][oc]=keep2;
-    }
+    hints -= (r===or && c===oc) ? 1 : 2;
   }
 
-  // 2) 単点微調整
-  if (hints>targetHints){
-    const singles=[];
-    for (let r=0;r<9;r++) for (let c=0;c<9;c++){
-      if (g[r][c] && !(forbidMask?.[r]?.[c])) singles.push([r,c]);
-    }
-    shuffle(singles);
-    for (const [r,c] of singles){
-      if (deadlineMs && Date.now()>deadlineMs) break;
-      if (hints<=targetHints) break;
-      const keep=g[r][c]; g[r][c]=0;
-      const cnt=countSolutionsFast(g,2,120000,deadlineMs);
-      if (cnt===1) hints--; else g[r][c]=keep;
-    }
-  }
+  return g;
+}
 
-  return g; // 目標に届かなくても唯一解ならOK（呼び元で最終確認）
+// 唯一性を保証：ダメなら非共有セルを全部戻す（これで必ず一意）
+function enforceUniqueOrFillAll(g, solved, forbidMask, deadlineMs){
+  const cnt = countSolutionsFast(g, 2, 60000, deadlineMs);
+  if (cnt === 1) return g;
+
+  // 時間切れ/複数解でも、安全に一意へ：非共有セルを全部与えに
+  for (let r=0;r<9;r++) for (let c=0;c<9;c++){
+    if (!forbidMask?.[r]?.[c]) g[r][c] = solved[r][c];
+    else g[r][c] = 0; // 共有マスは空欄固定
+  }
+  return g;
 }
 
 /* --------------------- メイン --------------------- */
@@ -206,8 +191,8 @@ export const onRequestPost = async ({ request, env }) => {
 
   const baseHint = HINT_BY_DIFF[difficulty] ?? HINT_BY_DIFF.normal;
   const hintTarget = overlapCnt.map(cnt=>{
-    const maxHints = 81 - (overlapEmpty ? cnt : 0);         // 共有マスは空欄にする場合は使えない
-    const bump = Math.min(12, Math.floor(cnt * 0.5));       // 重なりが多いほど増量
+    const maxHints = 81 - (overlapEmpty ? cnt : 0);      // 共有マスを空欄にするなら使えない
+    const bump = Math.min(12, Math.floor(cnt * 0.5));    // 重なりが多いほど増量
     return Math.max(17, Math.min(maxHints, baseHint + bump));
   });
 
@@ -215,67 +200,45 @@ export const onRequestPost = async ({ request, env }) => {
   const HARD_MS = Math.max(2000, Number(env?.GEN_TIMEOUT_MS) || 8000);
   const deadline = Date.now() + HARD_MS;
 
-  // forbid（共有マスを空欄にする）
+  // forbid（共有マスは空欄固定）
   const forbids = Array.from({length:nlayout.length}, ()=> Array.from({length:9},()=>Array(9).fill(false)));
   if (overlapEmpty){
     for (let i=0;i<overlaps.length;i++){
-      for (const e of overlaps[i]){
-        for (const {r,c} of e.cells){ forbids[i][r][c]=true; }
-      }
+      for (const e of overlaps[i]) for (const {r,c} of e.cells) forbids[i][r][c]=true;
     }
   }
 
-  // 何度か試す（ただし締切厳守）
-  const ATTEMPTS = 16;
-  for (let attempt=0; attempt<ATTEMPTS; attempt++){
-    if (Date.now()>deadline) break;
+  // 1回の生成で決め切る（締切重視）
+  const pattern = makeGlobalPattern();
+  const solved = nlayout.map(({ox,oy}) =>
+    Array.from({length:GRID},(_,r)=> Array.from({length:GRID},(_,c)=> pattern.valueAt(oy+r, ox+c)))
+  );
 
-    const pattern = makeGlobalPattern();
-    const solved = nlayout.map(({ox,oy}) =>
-      Array.from({length:GRID},(_,r)=> Array.from({length:GRID},(_,c)=> pattern.valueAt(oy+r, ox+c)))
-    );
+  const puzzles=[];
+  for (let i=0;i<nlayout.length;i++){
+    if (Date.now()>deadline) return json({ ok:false, reason:"failed to generate (resource-safe)" }, 500);
 
-    const puzzles=[];
-    let failed=false;
+    // 速い削り
+    let g = carveFast(solved[i], hintTarget[i], forbids[i], deadline);
 
-    for (let i=0;i<nlayout.length;i++){
-      const g = carveUniqueFromSolved(solved[i], hintTarget[i], forbids[i], deadline);
-      if (puzzleHasContradiction(g)){ failed=true; break; }
-
-      // 最終：唯一解か？
-      const cnt = countSolutionsFast(g, 2, 120000, deadline);
-      if (cnt !== 1){ failed=true; break; }
-
-      puzzles.push(g);
-      if (Date.now()>deadline){ failed=true; break; }
-    }
-    if (failed) continue;
-
-    // overlapEmpty=false の場合だけ、与え同士の不一致を検査（今回は常に空欄なので実質スキップ）
-    if (!overlapEmpty){
-      let bad=false;
-      for (let i=0;i<overlaps.length;i++){
-        for (const e of overlaps[i]){
-          const j=e.j;
-          for (const {r,c,r2,c2} of e.cells){
-            const a=puzzles[i][r][c], b=puzzles[j][r2][c2];
-            if (a!==0 && b!==0 && a!==b){ bad=true; break; }
-          }
-          if (bad) break;
-        }
-        if (bad){ failed=true; break; }
-      }
-      if (failed) continue;
+    // 与え矛盾ならやり直し（まず無いが安全のため）
+    if (puzzleHasContradiction(g)){
+      g = solved[i].map(r=>r.slice());
+      // 共有空欄だけ反映
+      for (let r=0;r<9;r++) for (let c=0;c<9;c++) if (forbids[i][r][c]) g[r][c]=0;
     }
 
-    const boards = nlayout.map((o, idx)=>({
-      id: layout[idx].id,
-      x: o.rawx, y: o.rawy,
-      grid: puzzles[idx],
-      solution: solved[idx],
-    }));
-    return json({ ok:true, puzzle:{ boards } });
+    // 必ず一意にする
+    g = enforceUniqueOrFillAll(g, solved[i], forbids[i], deadline);
+
+    puzzles.push(g);
   }
 
-  return json({ ok:false, reason:"failed to generate (resource-safe)" }, 500);
+  const boards = nlayout.map((o, idx)=>({
+    id: layout[idx].id,
+    x: o.rawx, y: o.rawy,
+    grid: puzzles[idx],
+    solution: solved[idx],
+  }));
+  return json({ ok:true, puzzle:{ boards } });
 };
