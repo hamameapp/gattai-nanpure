@@ -789,7 +789,7 @@
       setStatus('盤を追加 →「合体問題を作成」。背景左ドラッグ/Space/右/中ドラッグでパン、Ctrl+ホイールでズーム。');
       applyTransform(); draw();
     }else{
-      setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位でスナップ）');
+      setStatus(isProblemGenerated ? '前回の問題を復元しました（続きからプレイできます）' : 'レイアウトを復元しました（縦は3セル単位でスナップ）');
       applyTransform(); draw();
     }
     updateButtonStates();
