@@ -1,11 +1,4 @@
-// script.js — Cloudflare Pages フロント（画像保存=全体のみ／“掴んで”パン + 慣性）
-// ・ズーム/パン（背景左ドラッグ=パン、右/中ドラッグ、Space、ホイールパン、Ctrl+ホイールでズーム）
-// ・盤面追加は画面中心に生成、Yは3セル単位にスナップ
-// ・サーバ生成（/api/generate）
-// ・矛盾チェック（行/列/箱/共有）／解答トグル
-// ・エクスポート：JSON保存、PNG保存（全体。ID帯は省略）
-// ・フィットはID帯も含め必ず入る（下限2%まで）
-// ・保存キー: v4
+// script.js — ズーム修復版（ボタン/100%/フィット/ホイール対応）＋慣性パン＋画像保存（全体のみ）
 (() => {
   document.addEventListener('DOMContentLoaded', () => {
     const USE_LOCAL_ONLY = false; // サーバ生成を使う
@@ -29,10 +22,10 @@
 
     // ズームUI
     const zoomOutBtn = byId('zoomOut');
-    const zoomInBtn = byId('zoomIn');
+    const zoomInBtn  = byId('zoomIn');
     const zoomFitBtn = byId('zoomFit');
     const zoom100Btn = byId('zoom100');
-    const zoomPct = byId('zoomPct');
+    const zoomPct    = byId('zoomPct');
 
     // ===== 定数 =====
     const GRID = 9;
@@ -43,11 +36,11 @@
     const FONT = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
 
     const MIN_ZOOM = 0.1;       // 通常操作の下限
-    const MIN_ZOOM_FIT = 0.02;  // フィット時はここまで許容
+    const MIN_ZOOM_FIT = 0.02;  // フィット時の下限
     const MAX_ZOOM = 2.0;
     const ZOOM_STEP = 0.1;
 
-    const LABEL_H = 18; // 盤上部のID帯の高さ
+    const LABEL_H = 18;
     const LS_KEY = 'gattai_state_v4';
 
     // ===== 状態 =====
@@ -56,17 +49,17 @@
     let activeSquareId = null;
     let activeCell = null;
 
-    // ドラッグ・パン
+    // ドラッグ・パン・慣性
     let draggingBoard = null; // {id, offsetX, offsetY}
     let panning = false;
     let panStart = null;      // {mx,my,px,py}
     let isSpaceDown = false;
 
-    // 慣性
     let velX = 0, velY = 0;
     let lastMoveT = 0, lastMX = 0, lastMY = 0;
     let inertiaRAF = null;
 
+    // ビューポート
     let zoom = 1.0, panX = 0, panY = 0;
     let devicePR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     let showSolution = false;
@@ -81,7 +74,7 @@
     const setStatus = msg => { if (statusDiv) statusDiv.textContent = msg; };
 
     function updateButtonStates(){
-      zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
+      if (zoomPct) zoomPct.textContent = `${Math.round(zoom*100)}%`;
       const hasSquares = squares.length > 0;
       if (generateProblemButton) generateProblemButton.disabled = !hasSquares;
       if (deleteButton) deleteButton.disabled = (activeSquareId == null);
@@ -135,14 +128,30 @@
       if (w > rect.width/zoom || h > rect.height/zoom) fitZoom();
     }
 
+    // ---- ボタンによるズーム（復活）----
+    zoomOutBtn?.addEventListener('click', () => setZoom(zoom - ZOOM_STEP));
+    zoomInBtn ?.addEventListener('click', () => setZoom(zoom + ZOOM_STEP));
+    zoom100Btn?.addEventListener('click', () => setZoom(1));
+    zoomFitBtn ?.addEventListener('click', () => fitZoom());
+
+    // ---- マウスホイールでズーム（カーソル中心）----
+    // * ピンチ操作（トラックパッド）はブラウザがCtrl+Wheelとして飛んできますが、
+    //   ここでは修飾キーなしでもズームさせます。
+    canvas.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const dir = -Math.sign(e.deltaY);               // ホイール上=拡大 / 下=縮小
+      const factor = 1 + dir * 0.1;
+      setZoomAt(zoom * factor, mx, my);
+    }, { passive:false });
+
     // ===== 描画 =====
     function draw(){
-      // 背景クリア
       ctx.save(); ctx.setTransform(devicePR,0,0,devicePR,0,0); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore();
-      // 盤面
       applyTransform();
       for (const s of squares) drawBoardGeneric(ctx, s, /*omitLabels*/false);
-      // 選択セル
       if (activeCell){
         const s=squares.find(x=>String(x.id)===String(activeCell.id));
         if (s){ ctx.save(); ctx.globalAlpha=.25; ctx.fillStyle='#66aaff';
@@ -205,7 +214,7 @@
       const {x:xw,y:yw}=toWorld(mx,my);
       stopInertia();
 
-      // 右/中クリックは常にパン開始
+      // 右/中クリック または Space でパン開始
       if (e.button===1 || e.button===2 || isSpaceDown){
         e.preventDefault();
         panning = true;
@@ -221,12 +230,11 @@
         draggingBoard = { id:s.id, offsetX:xw - s.x, offsetY:yw - s.y };
         updateButtonStates(); draw();
       }else{
-        // 背景を左クリック → パン開始（“掴んで移動”）
+        // 背景左クリック → パン開始（掴んで移動）
         e.preventDefault();
         panning = true;
         panStart = { mx, my, px:panX, py:panY };
         lastMoveT = performance.now(); lastMX = mx; lastMY = my; velX = velY = 0;
-        // 背景を掴んだときは選択解除
         activeSquareId = null; activeCell = null; updateButtonStates(); draw();
       }
     });
@@ -240,7 +248,7 @@
         panY = panStart.py + (my - panStart.my);
         // 慣性用速度推定
         const dt = Math.max(1, now - lastMoveT);
-        velX = (mx - lastMX) / dt * 16.67; // 60fps基準に正規化
+        velX = (mx - lastMX) / dt * 16.67; // 60fps換算
         velY = (my - lastMY) / dt * 16.67;
         lastMoveT = now; lastMX = mx; lastMY = my;
 
@@ -260,20 +268,18 @@
     });
 
     window.addEventListener('mouseup',()=>{
-      // 盤ドラッグ終了
       if (draggingBoard){ draggingBoard = null; saveState(); }
-      // パン終了→慣性開始
       if (panning){
         panning = false;
-        startInertia(); // 惰性スクロール
+        startInertia();
         saveState();
       }
     });
 
     function startInertia(){
       stopInertia();
-      const friction = 0.92;         // 摩擦係数（0.9〜0.95くらいが自然）
-      const minSpeed = 0.05;         // 停止閾値
+      const friction = 0.92;
+      const minSpeed = 0.05;
       const step = ()=>{
         velX *= friction; velY *= friction;
         if (Math.abs(velX) < minSpeed && Math.abs(velY) < minSpeed){
@@ -290,7 +296,7 @@
       velX = velY = 0;
     }
 
-    // キー入力（数字/削除/矢印 + ショートカット）
+    // キー入力（ズーム/フィット/チェック & 入力）
     window.addEventListener('keydown',(e)=>{
       if (e.code==='Space') isSpaceDown=true;
       if (e.code==='KeyF'){ e.preventDefault(); fitZoom(); }
@@ -330,7 +336,7 @@
       const s={ id:nextId(), x:nx, y:ny, w:BOARD_PIX, h:BOARD_PIX,
         problemData:createEmptyGrid(), userData:createEmptyGrid(), checkData:createEmptyGrid(), solutionData:createEmptyGrid(), _userBackup:null };
       squares.push(s); activeSquareId=s.id; isProblemGenerated=false; showSolution=false;
-      setStatus('盤を追加：中心に生成しました（背景をドラッグでパン／Ctrl+ホイールでズーム）');
+      setStatus('盤を追加：中心に生成しました（背景ドラッグでパン／ホイールでズーム）');
       updateButtonStates(); draw(); saveState(); autoFitIfOverflow();
     });
 
@@ -384,7 +390,6 @@
       downloadBlob(blob, `gattai_${timestamp()}.json`);
     });
 
-    // 画像保存（全体を1枚。ID帯は描かない）
     exportImageAllButton?.addEventListener('click', ()=>{
       const {minX,minY,maxX,maxY}=contentBounds();
       const pad = 20;
@@ -423,8 +428,7 @@
       URL.revokeObjectURL(url);
     }
     function timestamp(){
-      const d=new Date();
-      const p=n=>String(n).padStart(2,'0');
+      const d=new Date(); const p=n=>String(n).padStart(2,'0');
       return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     }
 
@@ -578,7 +582,7 @@
     // ===== 起動 =====
     resizeCanvasToDisplaySize();
     if (!loadState()){
-      setStatus('「盤面を追加」→「合体問題を作成」。背景ドラッグでパン／Ctrl+ホイールでズーム／ホイールで移動（Shiftで横）');
+      setStatus('「盤面を追加」→「合体問題を作成」。背景ドラッグでパン／ホイールでズーム／Shift+ホイールで横移動');
       applyTransform(); draw();
     }else{
       setStatus(isProblemGenerated ? 'プレイ再開できます' : 'レイアウトを復元しました（縦は3セル単位）');
