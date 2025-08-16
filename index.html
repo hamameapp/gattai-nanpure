@@ -59,17 +59,13 @@
     ]
   }
   </script>
-  <!-- Google AdSense H5 Games Ads (Ad Placement API) -->
-  <script async
-    src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX"
-    crossorigin="anonymous"
-    data-adbreak-test="on"></script> <!-- ←開発/検証用。公開時はこの属性を削除 -->
+<!-- Google AdSense loader (once only) -->
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous"></script>
   <script>
-    // 初期化（公式のショートハンド）
+    // H5 Games Ads helpers (Ad Placement API)
     window.adsbygoogle = window.adsbygoogle || [];
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
-    // 任意設定：効果音など
-    try { window.adConfig({ sound: 'on' }); } catch (e) {}
+    try{ adConfig({ sound: 'on' }); }catch(e){}
   </script>
 </head>
 <body class="bg-slate-100 min-h-screen">
@@ -127,12 +123,32 @@
         </ul>
       </div>
     </details>
+<!-- === Ad: In-article (inside Help) === -->
+<article class="adbox my-4" style="min-height:200px">
+  <ins class="adsbygoogle"
+       style="display:block;text-align:center"
+       data-ad-layout="in-article"
+       data-ad-format="fluid"
+       data-ad-client="ca-pub-1460224105367515"
+       data-ad-slot="2862175826"></ins>
+</article>
+<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
     <!-- ステータス + キャンバス -->
     <div id="status-container" class="mb-2 text-center text-slate-700 min-h-6">
       <div id="status">盤を追加して「合体問題を作成」を押してください。</div>
     </div>
     <canvas id="canvas"></canvas>
+<!-- === Ad: Below Canvas (Display) === -->
+<div class="adbox my-4" style="min-height:280px">
+  <ins class="adsbygoogle"
+       style="display:block"
+       data-ad-client="ca-pub-1460224105367515"
+       data-ad-slot="9292972366"
+       data-ad-format="auto"
+       data-full-width-responsive="true"></ins>
+</div>
+<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
     <!-- 詳しいヘルプ -->
     <section id="help" class="mt-8 bg-white border rounded-lg p-5">
@@ -209,36 +225,16 @@
     -->
   </div>
 
-  <script src="script.js"></script>
-<!-- 保存クリック直前にリワード広告を挟む（script.js本体は変更しない） -->
-<script>
-(function(){
-  var btn = document.getElementById('exportImageAllButton');
-  if (!btn) return;
-  var reentrant = false;
+  <!-- === Ad: Multiplex (before footer) === -->
+<div class="adbox my-6" style="min-height:320px">
+  <ins class="adsbygoogle"
+       style="display:block"
+       data-ad-format="autorelaxed"
+       data-ad-client="ca-pub-1460224105367515"
+       data-ad-slot="4012725528"></ins>
+</div>
+<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
 
-  btn.addEventListener('click', function(ev){
-    // 既に再入中 or H5広告未ロードなら本来の処理へ素通し
-    if (reentrant || typeof window.adBreak !== 'function') return;
-
-    ev.stopImmediatePropagation();
-    ev.preventDefault();
-
-    window.adBreak({
-      type: 'reward',            // インタースティシャルにしたい場合は 'next' 等
-      name: 'save-reward',
-      beforeReward: function(showAdFn){ try { showAdFn && showAdFn(); } catch(e){} },
-      adViewed: function(){      // 視聴完了 → 本来の保存処理を実行
-        reentrant = true; btn.click(); reentrant = false;
-      },
-      adDismissed: function(){   // キャンセル/在庫なし → そのまま保存
-        reentrant = true; btn.click(); reentrant = false;
-      },
-      beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){ } },
-      afterAd: function(){}
-    });
-  }, { capture: true });
-})();
-</script>
+<script src="script.js"></script>
 </body>
 </html>
