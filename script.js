@@ -400,16 +400,14 @@
       const margin = 20;
       const regionW = Math.ceil((maxX-minX) + margin*2);
       const regionH = Math.ceil((maxY-minY) + margin*2);
-      const scale = 2; // 高解像度で出力
       const baseX = margin - minX;
       const baseY = margin - minY;
 
-      
       // 書き出し用の外枠ストローク（端の太りを防ぐ）
       const strokeRectCrisp = (gctx, x, y, w, h, lineWidth, color) => {
         gctx.save();
         gctx.strokeStyle = color;
-        gctx.lineWidth   = lineWidth;
+        gctx.lineWidth = lineWidth;
         gctx.lineCap = 'butt';
         gctx.lineJoin = 'miter';
         const needsHalf = (Math.round(lineWidth) % 2 === 1);
@@ -421,7 +419,8 @@
         gctx.beginPath(); gctx.moveTo(L, B); gctx.lineTo(L, T); gctx.stroke();
         gctx.restore();
       };
-// 1盤描画（problem/solution切替）
+
+      // 1盤描画（problem/solution切替）
       const drawOne = (gctx, s, ox, oy, mode /* 'problem' | 'solution' */)=>{
         // 外枠（PNGのみ均一化）
         strokeRectCrisp(gctx, ox, oy, s.w, s.h, 2, '#000');
@@ -452,53 +451,74 @@
         }
       };
 
-      // キャンバス作成 & 描画
-      const makeCanvas = (mode) => {
+      const makeCanvas = (mode, scale) => {
         const off = document.createElement('canvas');
-        off.width = regionW * scale; off.height = regionH * scale;
+        off.width = Math.max(1, regionW * scale); 
+        off.height = Math.max(1, regionH * scale);
         const g = off.getContext('2d', { alpha:false });
         g.setTransform(scale,0,0,scale,0,0);
         g.fillStyle = '#fff'; g.fillRect(0,0,regionW,regionH);
-        for (const s of squares){
-          drawOne(g, s, baseX + s.x, baseY + s.y, mode);
-        }
+        for (const s of squares) drawOne(g, s, baseX + s.x, baseY + s.y, mode);
         return off;
       };
 
-      // タイムスタンプ付きファイル名
       const now = new Date();
       const pad2 = (n) => String(n).padStart(2, '0');
       const stamp = `${now.getFullYear()}${pad2(now.getMonth()+1)}${pad2(now.getDate())}_${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
       const fnameProblem  = `gattai_problem_${stamp}.png`;
       const fnameSolution = `gattai_solution_${stamp}.png`;
 
-      // 問題を保存
-      const cvP = makeCanvas('problem');
-      cvP.toBlob((blob)=>{
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = fnameProblem; a.click();
-        URL.revokeObjectURL(url);
-      }, 'image/png');
+      const doSave = (scale) => {
+        // 問題を保存
+        const cvP = makeCanvas('problem', scale);
+        cvP.toBlob((blob)=>{
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = fnameProblem; a.click();
+          URL.revokeObjectURL(url);
+        }, 'image/png');
 
-      // 解答が無い場合はスキップして通知
-      const hasSolution = squares.some(s =>
-        Array.isArray(s.solutionData) && s.solutionData.some(row => row.some(v => v))
-      );
-      if (!hasSolution){
-        setStatus(`PNG を保存しました（${fnameProblem}、解答データが無いため問題のみ）`);
-        return;
+        // 解答の有無を確認
+        const hasSolution = squares.some(s =>
+          Array.isArray(s.solutionData) && s.solutionData.some(row => row.some(v => v))
+        );
+        if (!hasSolution){
+          setStatus(`PNG を保存しました（${fnameProblem}、解答データが無いため問題のみ）`);
+          return;
+        }
+
+        // 解答を保存
+        const cvS = makeCanvas('solution', scale);
+        cvS.toBlob((blob)=>{
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = fnameSolution; a.click();
+          URL.revokeObjectURL(url);
+        }, 'image/png');
+
+        setStatus(`PNG を保存しました（${fnameProblem} / ${fnameSolution}）`);
+      };
+
+      // ---- リワード広告：同意したら高解像度(2x)、しないなら標準(1x) ----
+      const ask = '広告を視聴すると高解像度(2x)で保存できます。視聴しますか？\n「キャンセル」で標準(1x)保存。';
+      const wantReward = (typeof window !== 'undefined' && confirm(ask));
+
+      const safeAdBreak = (typeof window !== 'undefined' && typeof window.adBreak === 'function') ? window.adBreak : null;
+
+      if (safeAdBreak && wantReward){
+        let called = false;
+        safeAdBreak({
+          type: 'reward',
+          name: 'export-hires',
+          beforeReward: (showAdFn) => { called = true; try{ showAdFn && showAdFn(); }catch(e){} },
+          adViewed: () => { doSave(2); },
+          adDismissed: () => { doSave(1); },
+          beforeAd: () => { setStatus('広告を表示中…'); },
+          afterAd:  () => { if (!called) doSave(1); }
+        });
+      } else {
+        // 広告が無い / 同意しない → 標準解像度
+        doSave(1);
       }
-
-      // 解答を保存
-      const cvS = makeCanvas('solution');
-      cvS.toBlob((blob)=>{
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = fnameSolution; a.click();
-        URL.revokeObjectURL(url);
-      }, 'image/png');
-
-      setStatus(`PNG を保存しました（${fnameProblem} / ${fnameSolution}）`);
-    });
+    }););
 
     function updateButtonStates(){
       zoomPct && (zoomPct.textContent = `${Math.round(zoom*100)}%`);
