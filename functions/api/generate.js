@@ -393,7 +393,7 @@ export async function onRequestPost({ request, env }) {
       grid: puzzles[idx],
       solution: solved[idx]
     }));
-    return json({ ok:true, puzzle:{ boards } });
+    return json({ ok:true, boards });
   }
 
   return json({ ok:false, reason:"generator failed within time budget" }, 500);
