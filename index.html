@@ -59,10 +59,10 @@
     ]
   }
   </script>
-<!-- Google AdSense H5 Games Ads (Ad Placement API) -->
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous"></script>
+
+  <!-- Google AdSense H5 Games Ads (Ad Placement API) -->
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1460224105367515" crossorigin="anonymous" data-adbreak-test="on"></script>
   <script>
-    // Initialize AdSense + H5 helpers
     window.adsbygoogle = window.adsbygoogle || [];
     window.adBreak = window.adConfig = function(o){ (window.adsbygoogle = window.adsbygoogle || []).push(o); };
     try{ adConfig({ sound: 'on' }); }catch(e){}
@@ -207,50 +207,51 @@
 
   <script src="script.js"></script>
 
-<!-- H5 Rewarded Ad for High-Res Export (2x/4x) -->
+<!-- H5 Rewarded Ad for High-Res Export (2x/4x), with logs -->
 <script>
 (function(){
-  function setupPngHook(buttonId){
-    var btn = document.getElementById(buttonId);
+  function attachPngHookById(id){
+    var btn = document.getElementById(id);
     if (!btn) return;
     var reentrant = false;
     btn.addEventListener('click', function(ev){
-      if (reentrant) return;
-      if (typeof window.adBreak !== 'function') { window.__EXPORT_SCALE__ = 1; return; }
+      if (reentrant){ console.log('[rvw]', id, 'reentrant skip'); return; }
+      if (typeof window.adBreak !== 'function'){ console.warn('[rvw]', id, 'adBreak undefined -> passthrough'); return; }
 
       ev.stopImmediatePropagation();
       ev.preventDefault();
 
-      var input = window.prompt('保存解像度を選択してください: 1=標準(1x) / 2=高精細(2x) / 4=超高精細(4x)\n2 または 4 を選ぶと広告を視聴します。', '2');
+      var input = window.prompt('保存解像度を選択してください:\n1=標準(1x) / 2=高精細(2x) / 4=超高精細(4x)\n※2/4は広告視聴後に保存します。', '2');
       var s = parseInt((input||'').trim(),10);
-      var proceed = function(){ reentrant = true; btn.click(); reentrant = false; setTimeout(function(){ window.__EXPORT_SCALE__ = null; }, 4000); };
+      var proceed = function(){ reentrant = true; btn.click(); reentrant = false; setTimeout(function(){ window.__EXPORT_SCALE__ = null; }, 3000); };
 
       if (s===2 || s===4){
-        window.__EXPORT_SCALE__ = s; // script.js 側で参照
+        window.__EXPORT_SCALE__ = s;
+        console.log('[rvw]', id, 'request reward', s+'x');
         window.adBreak({
           type: 'reward',
           name: 'export-hires-' + s + 'x',
-          beforeReward: function(showAd){ try{ showAd && showAd(); }catch(e){} },
-          adViewed: proceed,
-          adDismissed: function(){ window.__EXPORT_SCALE__ = 1; proceed(); },
+          beforeReward: function(showAd){ try{ console.log('[rvw]', id, 'beforeReward'); showAd && showAd(); }catch(e){ console.warn('[rvw] showAd error', e); } },
+          adViewed: function(){ console.log('[rvw]', id, 'adViewed'); proceed(); },
+          adDismissed: function(){ console.log('[rvw]', id, 'adDismissed'); window.__EXPORT_SCALE__ = 1; proceed(); },
           beforeAd: function(){ try{ window.setStatus && setStatus('広告を表示中…'); }catch(_){ } },
-          afterAd: function(){}
+          afterAd: function(){ console.log('[rvw]', id, 'afterAd'); }
         });
       } else {
         window.__EXPORT_SCALE__ = 1;
+        console.log('[rvw]', id, 'no reward, scale=1x');
         proceed();
       }
     }, { capture: true });
   }
 
-  function setupJsonHook(buttonId){
-    var btn = document.getElementById(buttonId);
+  function attachJsonHook(id){
+    var btn = document.getElementById(id);
     if (!btn) return;
     var reentrant = false;
     btn.addEventListener('click', function(ev){
-      if (reentrant || typeof window.adBreak !== 'function') return;
-      // 任意視聴（ポリシー順守）：視聴OKなら広告→保存、キャンセルなら即保存
-      var ok = window.confirm('JSONを保存する前に広告を視聴しますか？（キャンセルで広告なしで保存）');
+      if (reentrant || typeof window.adBreak !== 'function'){ return; }
+      var ok = window.confirm('JSON保存前に広告を視聴しますか？（キャンセルで広告なし保存）');
       if (!ok) return;
       ev.stopImmediatePropagation();
       ev.preventDefault();
@@ -267,11 +268,15 @@
     }, { capture: true });
   }
 
-  // PNG保存（高解像度リワード）/ JSON保存（任意リワード）
-  setupPngHook('exportImageAllButton');
-  setupJsonHook('exportTextButton');
+  // PNG保存のボタンIDが実装により異なる可能性があるため、両方に付与
+  attachPngHookById('exportImageAllButton');
+  attachPngHookById('exportImageButton'); // 予備
+
+  // JSON保存
+  attachJsonHook('exportTextButton');
+
+  console.log('[rvw] hooks attached');
 })();
 </script>
-
 </body>
 </html>
