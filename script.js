@@ -13,6 +13,9 @@
     const canvas = byId('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
 
+    // --- Mobile: allow dragging over canvas without scrolling the page ---
+    if (canvas) canvas.style.touchAction = 'none';
+
     const statusDiv = byId('status');
     const addSquareButton = byId('addSquareButton');
     const deleteButton = byId('deleteButton');
@@ -276,6 +279,62 @@ canvas.addEventListener('wheel', (e)=>{
     canvas.addEventListener('mousemove', handleMove);
     window.addEventListener('mousemove', e=>{ if (panning) handleMove(e); });
     window.addEventListener('mouseup',()=>{ panning=false; panStart=null; drag=null; saveState(); });
+    // === Pointer Events (mobile/pen friendly) — minimal, non-breaking addition ===
+    canvas.addEventListener('pointerdown',(e)=>{
+      if (e.isPrimary === false) return;               // ignore secondary touches
+      if (e.pointerType !== 'mouse') e.preventDefault();
+      canvas.setPointerCapture?.(e.pointerId);
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const {x:xw,y:yw} = toWorld(mx,my);
+
+      const s = boardAt(xw,yw);
+      // Background drag -> pan
+      if (!s){
+        panning = true; panStart = { mx, my, px:panX, py:panY };
+        activeSquareId = null; activeCell = null;
+        draw(); updateButtonStates();
+        return;
+      }
+
+      // Board drag
+      activeSquareId = s.id;
+      activeCell = cellAt(s, xw, yw);
+      drag = { id:s.id, offsetX:xw - s.x, offsetY:yw - s.y };
+      updateButtonStates(); draw();
+    });
+
+    canvas.addEventListener('pointermove',(e)=>{
+      if (e.isPrimary === false) return;
+      if (!panning && !drag) return;
+      if (e.pointerType !== 'mouse') e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+      if (panning && panStart){
+        panX = panStart.px + (mx - panStart.mx);
+        panY = panStart.py + (my - panStart.my);
+        applyTransform(); draw();
+        return;
+      }
+      if (drag){
+        const {x:xw,y:yw} = toWorld(mx,my);
+        const s = squares.find(ss => String(ss.id)===String(drag.id));
+        if (!s) return;
+        let nx = Math.round((xw - drag.offsetX) / SNAP_X) * SNAP_X;
+        let ny = Math.round((yw - drag.offsetY) / SNAP_Y) * SNAP_Y;
+        nx = Math.max(0, nx); ny = Math.max(0, ny);
+        s.x = nx; s.y = ny; draw();
+      }
+    });
+
+    function endPointer(e){
+      try{ canvas.releasePointerCapture?.(e.pointerId); }catch{}
+      panning=false; panStart=null; drag=null; saveState();
+    }
+    canvas.addEventListener('pointerup', endPointer);
+    canvas.addEventListener('pointercancel', endPointer);
+
 
     // 編集
     window.addEventListener('keydown',(e)=>{
